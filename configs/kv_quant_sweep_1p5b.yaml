@@ -1,0 +1,81 @@
+# I3 — KV-cache quantisation sweep on Qwen2.5-1.5B-Instruct (GSM8K, greedy CoT).
+# The `baseline` block is I1: the FP16 cache + the bit-exact zero-change control run first on every commit.
+# The runner expands `sweep` into cells; each cell reuses the FP16 prefill and the cached FP16 generations.
+
+experiment_id: I3_kv_quant_sweep
+project: cheap-tokens
+
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct
+  dtype: float16                      # T4 has no bf16; fp32 fallback if the zero-change control shows NaNs (amended 2026-10-18)
+  n_layers: 28
+  attn_implementation: eager          # needed for per-layer attention statistics and custom cache hooks
+
+task:
+  dataset: gsm8k
+  split: test
+  subset: configs/gsm8k_300_stratified.json   # fixed, length-stratified; null = full 1,319
+  prompt_template: prompts/gsm8k_8shot_cot.txt
+  answer_regex: "####\\s*(-?[0-9.,]+)"
+  tertiles_by: gold_solution_token_length
+  difficulty_labels: results/I1/difficulty_passk.parquet   # FP16 pass@k over 5 sampled decodes; H1 tertile test is run within strata (amended 2026-10-18)
+
+generation:
+  decoding: greedy
+  max_new_tokens: 512
+  batch_size: 8
+  stop_on_answer: true
+
+baseline:                               # I1
+  fp16_cache: results/I1/fp16_generations.parquet    # token ids + logits, computed once
+  zero_change_control:
+    enabled: true
+    weight_bits: 16
+    kv_bits: 16
+    sparsity: none
+    require_bitexact_tokens: true
+    max_abs_logit_diff: 1.0e-3          # fp16 rounding tolerance
+
+intervention:
+  weight:
+    bits: 16                            # 16 | 8 | 4 ; method gptq | awq
+    method: none
+  kv:
+    bits: 16                            # overridden by sweep: 8 | 4 | 2
+    scheme: per_token                   # overridden by sweep: per_token | per_channel
+    group_size: 64
+    prefill_fp16_then_quantise: true    # realistic deployment; shares prefill across cells
+    protect_sink_positions: 0           # ablation: 4 keeps the first 4 cached positions in FP16
+  sparsity:
+    method: none
+    keep_fraction: 1.0
+
+metrics:
+  accuracy: true
+  accuracy_by_tertile: true
+  per_token_kl_to_fp16: true
+  first_divergence_token: true          # primary statistic for H1 (amended 2026-10-18)
+  generated_tokens: true                # token inflation; enters energy-per-correct-answer
+  attention_stats: false                # entropy / top-k mass are computed once on the FP16 pass (I5 config)
+  bootstrap_resamples: 1000
+  paired_on_problems: true
+
+cost:
+  tokens_per_second: true
+  peak_memory: true
+  energy:
+    method: nvml                        # nvml | tokens_per_s_model (tegrastats only in the Jetson stretch arm)
+    poll_hz: 10
+    repeats: 3
+    report: median                      # spread over repeats reported alongside (amended 2026-10-18)
+
+sweep:
+  kv.bits: [8, 4, 2]
+  kv.scheme: [per_token, per_channel]
+  # minimum-viable version: kv.bits [8, 4], kv.scheme [per_token]
+
+logging:
+  wandb: true
+  wandb_project: cheap-tokens
+  table: results/I3/table.csv           # one row per configuration: accuracy, latency, memory, energy
+  output_dir: results/I3
