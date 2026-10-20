@@ -143,7 +143,8 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
 
     if layer_on:
         b, h, q, k = scores.shape
-        valid = torch.isfinite(scores)  # causal + padding
+        # HF masks add finfo.min (not -inf) to causal/padded positions; treat anything near it as masked
+        valid = torch.isfinite(scores) & (scores > torch.finfo(scores.dtype).min * 0.5)
         n_valid = valid.sum(-1, keepdim=True)
         n_keep = torch.clamp((cfg.keep_frac * n_valid.float()).ceil().long(), min=1)
         if cfg.method in ("sliding_window", "sink_window"):
@@ -175,7 +176,7 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
         with torch.no_grad():
             a = attn.float()
             ent = -(a * torch.log(a.clamp_min(1e-12))).sum(-1)  # [b, h, q]
-            n_valid = torch.isfinite(scores).sum(-1).clamp_min(1)  # [b, h, q]
+            n_valid = (torch.isfinite(scores) & (scores > torch.finfo(scores.dtype).min * 0.5)).sum(-1).clamp_min(1)  # [b, h, q]
             top_n = torch.clamp((0.1 * n_valid.float()).ceil().long(), min=1)
             srt = a.sort(dim=-1, descending=True).values
             cum = srt.cumsum(-1)
