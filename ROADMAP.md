@@ -18,15 +18,16 @@ Ten weeks, one project at a time, minimum-viable version first. Tick boxes as yo
 - [ ] Semantic Scholar sweep for prior head-to-head quantisation/sparsity studies with divergence position; record in `REVIEW.md` §6
 
 ## Milestone 2 — Weeks 3–4: harness and control
-- [ ] `src/harness`: batched greedy generation, 8-shot CoT template, FP16 generation + logit cache (I1)
-- [ ] Difficulty labels: 5 sampled FP16 decodes per problem, pass@k stored in `results/I1/difficulty_passk.parquet`
-- [ ] 300-problem GSM8K subset stratified by solution length and difficulty, indices committed to `configs/gsm8k_300_stratified.json`
-- [ ] `src/interventions`: weight quant (bitsandbytes/GPTQ), KV quant via HF `QuantizedCache` (hqq, quanto), top-k / sink+window masking in eager attention
-- [ ] `src/metrics`: accuracy, tertiles within strata, per-token KL, first-divergence token, generated-token count; paired bootstrap
-- [ ] `src/cost`: pynvml polling, latency model, energy per correct answer
-- [ ] Smallest end-to-end run: 1 config, 50 problems
-- [ ] **Expected-to-fail control passes:** zero-change run is bit-exact against the FP16 cache (logged)
-- [ ] Smoke-test results recorded: which KV backends run on T4; whether pynvml power is exposed on Kaggle/Colab
+- [x] `src/harness`: batched greedy generation, frozen 8-shot CoT template, fp16 generation + top-16 logprob cache (I1) — written 2026-10-20, not yet run on GPU
+- [x] Difficulty labels: pass@4 sampled fp16 decodes per problem, stored in `results/cache/difficulty_gsm8k.parquet` — written, not yet run
+- [x] `make_subset` command for the 300-problem GSM8K subset stratified by gold-solution tertile — written; **commit the generated `configs/gsm8k_300_stratified.json` after the first run**
+- [x] `src/interventions`: bitsandbytes int8/nf4 weights, `FakeQuantCache` (per-token / per-channel, sinks, fp16 prefill) with HF `QuantizedCache` as alternative, custom attention function (window / sink+window / top-k / leverage) with per-head entropy recorder — written, not yet run
+- [x] `src/metrics`: accuracy by tertile within strata, first-divergence token, truncated top-k KL, token inflation; paired bootstrap — written, unit-tested
+- [x] `src/frontier`: pynvml polling, latency model, energy per correct answer, Pareto sets, per-problem selector with CV — written, unit-tested
+- [x] `src/analysis`: pre-registered H1/H2/H3 tests, Figures 1–4 — written
+- [ ] `notebooks/00_smoke_test` passes on Kaggle (every code path, 30 problems); backend availability logged
+- [ ] **Expected-to-fail control passes:** zero-change run is bit-exact against the fp16 cache on 50 problems (logged)
+- [ ] Smoke-test results recorded: which KV backends run on T4; whether pynvml power is exposed on Kaggle/Colab; fp16 vs fp32 decision
 
 ## Milestone 3 — Weeks 5–7: minimum-viable sweeps (~18 GPU-h)
 - [ ] I2 INT4 weights

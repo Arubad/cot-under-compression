@@ -1,20 +1,20 @@
+# Lower bounds are the APIs the code uses (AttentionInterface.register needs transformers >= 4.48).
+# Install with: pip install -r requirements.txt
 torch>=2.3
-transformers>=4.45
-peft>=0.12
-trl>=0.11
-datasets>=2.20
+transformers>=4.51
 accelerate>=0.33
-bitsandbytes>=0.43        # INT8 / NF4 weight quantisation
-auto-gptq>=0.7            # GPTQ weight quantisation
-autoawq>=0.2              # AWQ weight quantisation (optional)
-optimum>=1.21
+bitsandbytes>=0.43        # int8 / nf4 weights (runs on T4, sm75)
+datasets>=2.20
+nvidia-ml-py>=12.535      # pynvml power polling
+scikit-learn>=1.4
 numpy>=1.26
 scipy>=1.13
 pandas>=2.2
 pyarrow>=16.0
 matplotlib>=3.9
-seaborn>=0.13
-nvidia-ml-py>=12.535      # NVML power polling
-wandb>=0.17
 pyyaml>=6.0
 tqdm>=4.66
+# optional backends (not needed for the minimum version):
+# optimum-quanto>=0.2     # HF QuantizedCache backend "quanto"
+# hqq>=0.2                # HF QuantizedCache backend "hqq"
+# optimum>=1.21 auto-gptq>=0.7 autoawq>=0.2   # pre-quantised GPTQ / AWQ checkpoints

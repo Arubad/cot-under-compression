@@ -1,0 +1,54 @@
+seed: 0
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct
+  dtype: float16                 # T4 has no bf16; set float32 if the zero-change control reports NaNs
+  attn_implementation: eager     # required: custom attention function and head statistics
+  n_layers: 28
+  n_heads: 12                    # query heads (2 KV heads: GQA)
+
+task:
+  dataset: gsm8k                 # gsm8k | math500 | arc
+  subset: configs/gsm8k_300_stratified.json   # null = full 1,319 (full version)
+  subset_size: 300
+  n: null
+
+generation:
+  max_new_tokens: 512
+  batch_size: 8
+  topk: 16                       # top-k logprobs recorded per step (KL / first-divergence)
+
+baseline:
+  control_problems: 50           # zero-change control problems (bit-exact on all of them)
+  difficulty: {k: 4, temperature: 0.7}
+
+intervention:
+  weight_bits: 16                # 16 | 8 | 4  (bitsandbytes int8 / nf4)
+  weight_method: bnb
+  kv_bits: 16                    # 16 | 8 | 4 | 2
+  kv_scheme: per_token           # per_token | per_channel
+  kv_group_size: 64
+  kv_sink_tokens: 0              # ablation: 4 keeps the first positions in fp16
+  kv_quantise_prefill: false     # prefill at fp16, cache quantised after (deployment setting)
+  kv_backend: fake               # fake (FakeQuantCache) | hf_quanto | hf_hqq
+  sparsifier: none               # none | sliding_window | sink_window | topk_heavy_hitter | leverage
+  keep_frac: 1.0
+  sparse_sink_tokens: 4
+  layer: null                    # null = all layers; int for the per-head sweep
+  head: null
+
+metrics:
+  bootstrap_resamples: 1000
+
+cost:
+  poll_hz: 10
+  repeats: 3
+  fallback_w_active: 70.0        # T4 TDP; used when NVML is unavailable
+
+logging:
+  output_dir: results
+
+experiment_id: I3_kv_sweep
+# Speed/energy for fake-quant cells is simulated from the latency model (labelled); set kv_backend hf_quanto|hf_hqq for measured runs.
+expected: {default: "int8 KV ~ free; int4 costs several points concentrated in long solutions within each stratum; int2 collapses; median first-divergence moves earlier 8 -> 4 -> 2"}
+sweep: {kv_bits: [8, 4, 2], kv_scheme: [per_token, per_channel]}
+sweep_minimum: {kv_bits: [8, 4], kv_scheme: [per_token]}
