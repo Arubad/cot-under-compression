@@ -127,6 +127,39 @@ def _repeat_kv(x, n_rep: int):
     return x[:, :, None, :, :].expand(b, h, n_rep, s, d).reshape(b, h * n_rep, s, d)
 
 
+_MASK_SEEN = set()
+
+
+def _additive_mask(attention_mask, scores):
+    """Return a float additive mask [b|1, 1, q, k] equal to what HF eager attention adds.
+
+    Which mask HF hands a *custom* attention implementation depends on the transformers
+    version: a float additive mask (eager style), a boolean mask (sdpa style, True = attend),
+    or None when the sdpa path decided a pure causal mask can be skipped.  Adding a boolean
+    mask or no mask at all silently breaks the zero-change control (SMOKE-02, 2026-11-09), so
+    every case is normalised here.  ``register()`` also registers the eager mask builder for
+    "sparse" so that recent versions give us the float mask directly.
+    """
+    import torch
+
+    b, h, q, k = scores.shape
+    kind = "none" if attention_mask is None else str(attention_mask.dtype)
+    if kind not in _MASK_SEEN:
+        _MASK_SEEN.add(kind)
+        print(f"[sparsify] attention_mask received as: {kind}" + ("" if attention_mask is None else f" shape={tuple(attention_mask.shape)}"))
+    neg = torch.finfo(scores.dtype).min
+    if attention_mask is None:
+        # pure causal: query i (at absolute position k - q + i) may see keys 0 .. k - q + i
+        qi = torch.arange(q, device=scores.device).view(q, 1) + (k - q)
+        kj = torch.arange(k, device=scores.device).view(1, k)
+        allowed = kj <= qi
+        return torch.where(allowed, torch.zeros((), dtype=scores.dtype, device=scores.device), torch.full((), neg, dtype=scores.dtype, device=scores.device)).view(1, 1, q, k)
+    m = attention_mask[:, :, :, :k] if attention_mask.dim() == 4 else attention_mask
+    if m.dtype == torch.bool:
+        return torch.where(m, torch.zeros((), dtype=scores.dtype, device=scores.device), torch.full((), neg, dtype=scores.dtype, device=scores.device))
+    return m.to(scores.dtype)
+
+
 def sparse_attention_forward(module, query, key, value, attention_mask, scaling: float, dropout: float = 0.0, **kwargs):
     import torch
 
@@ -135,8 +168,7 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
     key_states = _repeat_kv(key, n_rep)
     value_states = _repeat_kv(value, n_rep)
     scores = torch.matmul(query, key_states.transpose(2, 3)) * scaling  # [b, h, q, k]
-    if attention_mask is not None:
-        scores = scores + attention_mask[:, :, :, : key_states.shape[-2]]
+    scores = scores + _additive_mask(attention_mask, scores)
     layer_idx = getattr(module, "layer_idx", -1)
     lset, hset = cfg.layer_set(), cfg.head_set()
     layer_on = cfg.active and (lset is None or layer_idx in lset)
@@ -202,6 +234,14 @@ def register() -> None:
     try:
         AttentionInterface.register("sparse", sparse_attention_forward)
     except Exception:  # already registered
+        pass
+    # Give the mask builder an entry for "sparse" too, so HF produces the eager (float additive)
+    # mask for us instead of the sdpa bool mask / None (transformers >= 4.53 masking_utils).
+    try:
+        from transformers.masking_utils import AttentionMaskInterface, eager_mask
+
+        AttentionMaskInterface.register("sparse", eager_mask)
+    except Exception:  # older transformers: masks are built per-model as float tensors already
         pass
 
 

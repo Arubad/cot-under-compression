@@ -34,6 +34,8 @@ def run_smoke(model: str = "Qwen/Qwen2.5-1.5B-Instruct") -> None:
     from . import run as R
     from .analysis.figures import analyze
 
+    import torch, transformers
+    print(f"[smoke] torch {torch.__version__}  transformers {transformers.__version__}  cuda {torch.cuda.is_available()}")
     tmp = tempfile.mkdtemp(prefix="cot_smoke_")
     os.environ["RESULTS_ROOT"] = os.path.join(tmp, "results")
     cfg = smoke_config(model, tmp)
