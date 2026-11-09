@@ -19,7 +19,7 @@ def smoke_config(model: str, tmp: str) -> dict:
     return {
         "experiment_id": "SMOKE_I1_baseline",
         "seed": 0,
-        "model": {"name": model, "dtype": "auto", "attn_implementation": "eager", "n_layers": 28, "n_heads": 12},
+        "model": {"name": model, "dtype": "float32", "attn_implementation": "eager", "n_layers": 28, "n_heads": 12},
         "task": {"dataset": "gsm8k", "subset": None, "n": 30},
         "generation": {"max_new_tokens": 64, "batch_size": 8, "topk": 8},
         "baseline": {"control_problems": 12, "difficulty": {"k": 2, "temperature": 0.7}},

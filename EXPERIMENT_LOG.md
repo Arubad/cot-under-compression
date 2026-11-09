@@ -38,3 +38,15 @@ Config hash = first 12 hex characters of `sha256` over the resolved YAML (`pytho
 ---
 
 _(real entries start below)_
+
+## 2026-11-09 — SMOKE-01 — first smoke test on Kaggle T4: fp16 produces NaN logprobs
+
+- Config: src/smoke.py defaults (dtype auto → fp16 on T4)
+- Git commit: `db2dc4f`
+- Model / task / n_problems: Qwen2.5-1.5B-Instruct / GSM8K / 12 control problems
+- Hardware: Kaggle T4 x2, Internet On
+- Wall-clock / GPU-h: < 0.1 h (download + 3 control passes)
+- Expected: zero-change control bit-exact, fp16 accuracy in the 55–75 % range.
+- Observed: `nan_in_logprobs: true`, `accuracy_fp16: 0.0`, control `passed: false`. Cache-path and sparse-path mismatches were both 0, so the three code paths agree with each other; the NaNs come from the fp16 forward pass itself (known Qwen2.5 fp16 overflow; T4 has no bf16).
+- Control status: FAIL on `db2dc4f` (harness-level, not a sweep).
+- Next change: switch `model.dtype` to `float32` in every config and in the smoke defaults. Decision for the pre-registered "fp16 vs fp32" question: **fp32 is the reference precision for all 1.5B experiments.** Consequence: measured latency/energy baselines are fp32, so the weight-quantisation arm (I2) compares INT8/NF4 against an fp32 rather than fp16 reference. Re-run the smoke test on the new commit.

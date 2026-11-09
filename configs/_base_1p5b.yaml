@@ -4,7 +4,7 @@
 seed: 0
 model:
   name: Qwen/Qwen2.5-1.5B-Instruct
-  dtype: float16                 # T4 has no bf16; set float32 if the zero-change control reports NaNs
+  dtype: float32                 # T4 has no bf16 and Qwen2.5-1.5B produces NaN logprobs in fp16 (smoke test 2026-11-09); fp32 fits T4
   attn_implementation: eager     # required: custom attention function and head statistics
   n_layers: 28
   n_heads: 12                    # query heads (2 KV heads: GQA)
