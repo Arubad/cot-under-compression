@@ -9,9 +9,15 @@ the latency model and the HF backend (below).
 
 Schemes (x has shape [batch, heads, tokens, head_dim]):
   per_token   one (scale, zero-point) per token per head, over head_dim
-  per_channel one (scale, zero-point) per channel per head, over a block of
-              ``group_size`` tokens (KIVI-style); decode tokens are kept in fp16
-              in a residual tail until a block completes, then re-quantised in place.
+  per_channel one (scale, zero-point) per channel per head, over each group of
+              ``group_size`` consecutive tokens (KIVI-style).
+Residual tail (amendment 2026-11-21, Q13/Q10): for *both* schemes the most recent
+``residual_tokens`` positions (default 64, KIVI / HF QuantizedCache practice) are kept
+in full precision; a position is quantised once it falls out of the tail and is
+never re-quantised.  Without the tail, per-token INT4 collapses at the first decode
+step (DIAG B: KL 9.8 nats), and per-token vs per-channel would compare a grouping axis
+confounded with a residual.  ``residual_tokens=0`` restores the registered v0.2 cache
+for per-token.
 Quantiser: asymmetric uniform with 2^bits levels (``mode="asym"``, the KIVI /
 KVQuant convention) or symmetric with scale = max|x| / (2^(bits-1) - 1).
 ``sink_tokens`` > 0 keeps the first positions in fp16 (StreamingLLM sinks).
@@ -90,10 +96,11 @@ def _make_cache_class():
     from transformers import DynamicCache
 
     class FakeQuantCache(DynamicCache):
-        def __init__(self, bits: int = 4, scheme: str = "per_token", group_size: int = 64, sink_tokens: int = 0, quantise_prefill: bool = False, mode: str = "asym"):
+        def __init__(self, bits: int = 4, scheme: str = "per_token", group_size: int = 64, sink_tokens: int = 0, quantise_prefill: bool = False, mode: str = "asym", residual_tokens: int = 64):
             super().__init__()
             self.bits, self.scheme, self.group_size, self.sink_tokens, self.quantise_prefill, self.mode = bits, scheme, group_size, sink_tokens, quantise_prefill, mode
-            self._n_quantised: Dict[int, int] = {}  # per layer: tokens already quantised (per_channel residual bookkeeping)
+            self.residual_tokens = int(residual_tokens)
+            self._n_quantised: Dict[int, int] = {}  # per layer: positions [0, n) already quantised
 
         # --- storage access that works across transformers versions (key_cache lists or CacheLayer objects)
         def _get(self, layer_idx: int):
@@ -107,18 +114,30 @@ def _make_cache_class():
             else:
                 self.key_cache[layer_idx], self.value_cache[layer_idx] = k, v
 
-        def _q(self, x):
-            axis = -1 if self.scheme == "per_token" else -2
-            return fake_quant_torch(x, self.bits, axis, self.mode)
-
         def _quantise_range(self, x, start: int, end: int):
-            """Return x with positions [start, end) quantised (respecting sinks)."""
-            s = max(start, self.sink_tokens)
-            if s >= end:
+            """Return x with positions [start, end) quantised; sink positions stay in full precision.
+            per_channel: ``end - start`` is a multiple of group_size and each group gets its own scales."""
+            if end <= start:
                 return x
             out = x.clone()
-            out[:, :, s:end] = self._q(x[:, :, s:end])
+            seg = x[:, :, start:end]
+            if self.scheme == "per_token":
+                q = fake_quant_torch(seg, self.bits, -1, self.mode)
+            else:
+                b, h, n, d = seg.shape
+                G = self.group_size
+                q = fake_quant_torch(seg.reshape(b, h, n // G, G, d), self.bits, -2, self.mode).reshape(b, h, n, d)
+            out[:, :, start:end] = q
+            if self.sink_tokens > start:
+                s_end = min(self.sink_tokens, end)
+                out[:, :, start:s_end] = x[:, :, start:s_end]
             return out
+
+        def _target_end(self, T: int, done: int) -> int:
+            end = max(done, T - self.residual_tokens)
+            if self.scheme != "per_token":
+                end = done + ((end - done) // self.group_size) * self.group_size
+            return end
 
         def update(self, key_states, value_states, layer_idx: int, cache_kwargs=None):
             if self.bits >= 16:
@@ -127,31 +146,28 @@ def _make_cache_class():
             k_full, v_full = super().update(key_states, value_states, layer_idx, cache_kwargs)
             T = k_full.shape[-2]
             done = self._n_quantised.get(layer_idx, 0)
-            if self.scheme == "per_token":
-                new_end = T
-            else:  # per_channel: quantise completed blocks only; keep the tail in fp16
-                new_end = done + ((T - done) // self.group_size) * self.group_size
+            new_end = self._target_end(T, done)
             if new_end > done:
                 k_full = self._quantise_range(k_full, done, new_end)
                 v_full = self._quantise_range(v_full, done, new_end)
                 self._set(layer_idx, k_full, v_full)
                 self._n_quantised[layer_idx] = new_end
             if is_prefill and not self.quantise_prefill:
-                # prefill attention sees fp16; the cache is already quantised for later steps
+                # prefill attention sees full precision; the cache is already quantised for later steps
                 return key_states, value_states
             return k_full, v_full
 
     return FakeQuantCache
 
 
-def make_cache_factory(bits: int = 16, scheme: str = "per_token", group_size: int = 64, sink_tokens: int = 0, quantise_prefill: bool = False, backend: str = "fake", mode: str = "asym") -> Optional[Union[Callable, Dict]]:
+def make_cache_factory(bits: int = 16, scheme: str = "per_token", group_size: int = 64, sink_tokens: int = 0, quantise_prefill: bool = False, backend: str = "fake", mode: str = "asym", residual_tokens: int = 64) -> Optional[Union[Callable, Dict]]:
     """None at full precision; a callable returning a fresh FakeQuantCache; or generate() kwargs for the HF backend."""
     if bits >= 16:
         return None
     if backend.startswith("hf_"):
-        return {"cache_implementation": "quantized", "cache_config": {"backend": backend[3:], "nbits": int(bits), "q_group_size": int(group_size), "residual_length": int(group_size)}}
+        return {"cache_implementation": "quantized", "cache_config": {"backend": backend[3:], "nbits": int(bits), "q_group_size": int(group_size), "residual_length": int(residual_tokens)}}
     cls = _make_cache_class()
-    return lambda: cls(bits=bits, scheme=scheme, group_size=group_size, sink_tokens=sink_tokens, quantise_prefill=quantise_prefill, mode=mode)
+    return lambda: cls(bits=bits, scheme=scheme, group_size=group_size, sink_tokens=sink_tokens, quantise_prefill=quantise_prefill, mode=mode, residual_tokens=residual_tokens)
 
 
 def kv_bytes(n_layers: int, n_kv_heads: int, head_dim: int, tokens: int, bits: int) -> float:

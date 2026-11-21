@@ -21,11 +21,14 @@ def _tokens(records: List[Dict]) -> Dict[str, List[int]]:
     return {r["id"]: r["gen_tokens"] for r in records}
 
 
-def zero_change_control(model, tokenizer, problems: List[Dict], task: str, max_new_tokens: int, batch_size: int, max_abs_logprob_diff: float = 1e-2) -> Dict:
+def zero_change_control(model, tokenizer, problems: List[Dict], task: str, max_new_tokens: int, batch_size: int, max_abs_logprob_diff: float = 1e-2, reference_records: List[Dict] = None) -> Dict:
+    """``reference_records``: the cached reference run (I1).  When given, the eager run must also reproduce
+    it token-for-token, which guards against stack or VM drift between the session that built the cache
+    and the session running the sweep."""
     from .generate import run_generation
 
     apply_sparse(model, SparseConfig(method="none"))
-    base = run_generation(model, tokenizer, problems, task, max_new_tokens, batch_size, desc="control: eager fp16")
+    base = run_generation(model, tokenizer, problems, task, max_new_tokens, batch_size, desc="control: eager reference")
 
     cls = _make_cache_class()
     via_cache = run_generation(model, tokenizer, problems, task, max_new_tokens, batch_size, cache_factory=lambda: cls(bits=16), desc="control: cache path @16 bit")
@@ -47,10 +50,15 @@ def zero_change_control(model, tokenizer, problems: List[Dict], task: str, max_n
         "cache_path_mismatches": len(mism_cache),
         "sparse_path_mismatches": len(mism_sparse),
         "max_abs_logprob_diff_sparse_vs_eager": float(max(lp_diff)) if lp_diff else 0.0,
-        "accuracy_fp16": float(np.mean([r["correct"] for r in base])),
+        "accuracy_fp16": float(np.mean([r["correct"] for r in base])),  # name kept for compatibility; the reference is fp32 (D-001)
+        "accuracy_reference": float(np.mean([r["correct"] for r in base])),
         "nan_in_logprobs": bool(any(np.isnan(r["topk_logprobs"]).any() for r in base if r["topk_logprobs"])),
     }
-    result["passed"] = result["cache_path_mismatches"] == 0 and result["sparse_path_mismatches"] == 0 and result["max_abs_logprob_diff_sparse_vs_eager"] <= max_abs_logprob_diff and not result["nan_in_logprobs"]
+    if reference_records is not None:
+        ref = {r["id"]: list(r["gen_tokens"]) for r in reference_records}
+        result["reference_cache_mismatches"] = int(sum(1 for i in tb if i in ref and list(tb[i]) != ref[i]))
+        result["reference_cache_compared"] = int(sum(1 for i in tb if i in ref))
+    result["passed"] = result.get("reference_cache_mismatches", 0) == 0 and result["cache_path_mismatches"] == 0 and result["sparse_path_mismatches"] == 0 and result["max_abs_logprob_diff_sparse_vs_eager"] <= max_abs_logprob_diff and not result["nan_in_logprobs"]
     if not result["passed"]:
         result["note"] = "HARNESS BROKEN: fix before any sweep. If nan_in_logprobs, set model.dtype: float32 (T4 has no bf16)."
     return result

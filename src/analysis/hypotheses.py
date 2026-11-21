@@ -29,7 +29,14 @@ def test_h1(kv_rows: List[Dict], weight_rows: List[Dict], scheme: str = "per_tok
     kv = [r for r in kv_rows if r.get("_meta", {}).get("cell", {}).get("kv_scheme", scheme) == scheme]
     by_bits = {int(r["_meta"]["cell"]["kv_bits"]): r for r in kv}
     bits = sorted(by_bits, reverse=True)  # 8, 4, 2
-    med = {b: by_bits[b]["divergence"]["median_first_divergence"] for b in bits if by_bits[b].get("divergence")}
+    # Primary statistic (amendment 2026-11-21, Q3): Kaplan-Meier median of T_div (censored at the
+    # trajectory length); the v0.2 naive median is kept in the report as `naive_median_by_bits`.
+    med = {b: by_bits[b]["divergence"].get("km_median_first_divergence") or by_bits[b]["divergence"]["median_first_divergence"] for b in bits if by_bits[b].get("divergence")}
+    naive = {b: by_bits[b]["divergence"]["median_first_divergence"] for b in bits if by_bits[b].get("divergence")}
+    from ..metrics.divergence import fit_sigma_exponent
+
+    rates = {b: by_bits[b]["divergence"].get("exponential_hazard_per_token", float("nan")) for b in bits if by_bits[b].get("divergence")}
+    w_rates = {int(r["_meta"]["cell"].get("weight_bits", 16)): r["divergence"].get("exponential_hazard_per_token", float("nan")) for r in weight_rows if r.get("divergence")}
     mono = all(med[bits[i]]["mean"] > med[bits[i + 1]]["mean"] and not ci_overlaps(med[bits[i]], med[bits[i + 1]]) for i in range(len(bits) - 1)) if len(med) >= 2 else False
     within_ci = all(ci_overlaps(med[bits[i]], med[bits[i + 1]]) for i in range(len(bits) - 1)) if len(med) >= 2 else False
     kv4 = by_bits.get(4)
@@ -50,7 +57,7 @@ def test_h1(kv_rows: List[Dict], weight_rows: List[Dict], scheme: str = "per_tok
         verdict = "confirmed"
     else:
         verdict = "under-powered" if (kv4 is None or w4 is None or len(med) < 3) else "inconclusive"
-    return {"verdict": verdict, "median_first_divergence_by_bits": med, "monotone_non_overlapping": mono, "kv4_tertile_gap_ratio": tert_ratio, "kv4_within_stratum_ratios": strata, "weight4_tertile_gap_ratio": w_ratio}
+    return {"verdict": verdict, "statistic": "km_median_first_divergence", "median_first_divergence_by_bits": med, "naive_median_by_bits": naive, "hazard_per_token_kv": rates, "hazard_per_token_weights": w_rates, "sigma_exponent_fit": fit_sigma_exponent(rates), "monotone_non_overlapping": mono, "kv4_tertile_gap_ratio": tert_ratio, "kv4_within_stratum_ratios": strata, "weight4_tertile_gap_ratio": w_ratio}
 
 
 def test_h2(perhead_rows: List[Dict], head_stats: pd.DataFrame, fp16_accuracy: float) -> Dict:
@@ -64,19 +71,42 @@ def test_h2(perhead_rows: List[Dict], head_stats: pd.DataFrame, fp16_accuracy: f
         key = (int(c["layer"]), int(c["head"]))
         if key not in st.index:
             continue
-        rows.append({"layer": key[0], "head": key[1], "drop": fp16_accuracy - r["accuracy"]["accuracy"]["mean"], "entropy": float(st.loc[key, "entropy"]), "topk_mass": float(st.loc[key, "topk_mass"])})
+        d = r.get("divergence", {})
+        row = {"layer": key[0], "head": key[1], "drop": fp16_accuracy - r["accuracy"]["accuracy"]["mean"], "entropy": float(st.loc[key, "entropy"]), "topk_mass": float(st.loc[key, "topk_mass"]),
+               "mean_kl": float(d.get("mean_kl_before_divergence", {}).get("mean", float("nan"))), "km_median_tdiv": float(d.get("km_median_first_divergence", {}).get("mean", float("nan"))),
+               "hazard": float(d.get("exponential_hazard_per_token", float("nan")))}
+        for extra in ("sink_share", "top1pct_mass", "wo_norm"):
+            if extra in st.columns:
+                row[extra] = float(st.loc[key, extra])
+        rows.append(row)
     df = pd.DataFrame(rows)
     if len(df) < 5:
         return {"verdict": "inconclusive", "n_heads": int(len(df))}
     rho_e = spearman(df["entropy"].values, df["drop"].values)
     rho_m = spearman(df["topk_mass"].values, df["drop"].values)
+    from ..common.stats import partial_spearman
+
+    # Secondary (amendment 2026-11-21, Q4): continuous outcomes, which escape the Δacc noise floor
+    # (theory/02 §4), and a partial correlation controlling for the head's output-projection norm.
+    secondary = {}
+    for outcome in ("mean_kl", "hazard"):
+        if df[outcome].notna().sum() >= 5:
+            secondary[f"spearman_entropy_{outcome}"] = spearman(df["entropy"].values, df[outcome].values)
+            secondary[f"spearman_topk_mass_{outcome}"] = spearman(df["topk_mass"].values, df[outcome].values)
+            for extra in ("sink_share", "top1pct_mass"):
+                if extra in df:
+                    secondary[f"spearman_{extra}_{outcome}"] = spearman(df[extra].values, df[outcome].values)
+            if "wo_norm" in df:
+                secondary[f"partial_spearman_entropy_{outcome}_given_wo"] = partial_spearman(df["entropy"].values, df[outcome].values, df["wo_norm"].values)
+    if "wo_norm" in df:
+        secondary["partial_spearman_entropy_drop_given_wo"] = partial_spearman(df["entropy"].values, df["drop"].values, df["wo_norm"].values)
     if abs(rho_e) < 0.3:
         verdict = "refuted"
     elif rho_e >= 0.6 and rho_m <= -0.5:
         verdict = "confirmed"
     else:
         verdict = "under-powered"
-    return {"verdict": verdict, "n_heads": int(len(df)), "spearman_entropy_drop": rho_e, "spearman_topk_mass_drop": rho_m, "table": df.to_dict("records")}
+    return {"verdict": verdict, "n_heads": int(len(df)), "spearman_entropy_drop": rho_e, "spearman_topk_mass_drop": rho_m, "secondary": secondary, "table": df.to_dict("records")}
 
 
 def test_h3(frontier_verdict: Dict, selector_verdict: Dict) -> Dict:

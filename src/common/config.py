@@ -76,6 +76,8 @@ SWEEP_KEY_PATHS: Dict[str, str] = {
     "kv_group_size": "intervention.kv_group_size",
     "kv_sink_tokens": "intervention.kv_sink_tokens",
     "kv_quantise_prefill": "intervention.kv_quantise_prefill",
+    "kv_residual_tokens": "intervention.kv_residual_tokens",
+    "weight_compute_dtype": "intervention.weight_compute_dtype",
     "sparse_sink_tokens": "intervention.sparse_sink_tokens",
     # repo 3
     "method": "unlearn.method",

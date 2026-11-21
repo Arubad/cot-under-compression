@@ -27,9 +27,11 @@ baseline:
 intervention:
   weight_bits: 16                # 16 | 8 | 4  (bitsandbytes int8 / nf4)
   weight_method: bnb
+  weight_compute_dtype: float32  # NF4 compute dtype (amendment 2026-11-21, Q9); LLM.int8 always computes in fp16
   kv_bits: 16                    # 16 | 8 | 4 | 2
   kv_scheme: per_token           # per_token | per_channel
   kv_group_size: 64
+  kv_residual_tokens: 64         # full-precision tail of recent positions, both schemes (amendment 2026-11-21, Q13)
   kv_sink_tokens: 0              # ablation: 4 keeps the first positions in fp16
   kv_quantise_prefill: false     # prefill at fp16, cache quantised after (deployment setting)
   kv_backend: fake               # fake (FakeQuantCache) | hf_quanto | hf_hqq

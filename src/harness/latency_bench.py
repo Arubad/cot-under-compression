@@ -135,3 +135,64 @@ def simulated_energy_per_problem(lm: Dict, batch_size: int, mean_prompt: float, 
     for i in range(int(round(mean_gen))):
         total_s += a / batch_size + g + b * s_kv * keep_frac_eff * (mean_prompt + i)
     return float(total_s * w)
+
+
+# ---------------------------------------------------------------- cost ratios (amendment 2026-11-21, Q14 / Q2)
+
+def _beta(lm: Dict, kv_ref: str) -> float:
+    """Per-sequence, per-cached-token cost of a KV byte saving.
+
+    ``bandwidth`` (primary): the saved bytes priced at the bandwidth the weight read achieves
+    (kv_bytes_per_token / eff_weight_bw), i.e. what a fused decoding kernel would save.
+    ``eager`` (secondary): the measured eager-attention term beta, which credits KV compression
+    with the inefficiency of unfused attention + repeat_kv (DIAG A: 14x worse per byte)."""
+    if kv_ref == "eager":
+        return float(lm["beta_s"])
+    bw = float(lm.get("eff_weight_bw_bytes_per_s") or lm["w_bytes"] / lm["alpha_s"])
+    return float(lm["kv_bytes_per_token"]) / bw
+
+
+def decode_cost_s(lm: Dict, batch_size: int, prompts: Sequence[float], n_gens: Sequence[float], kv_scale: float = 1.0, keep_frac_eff: float = 1.0, residual_tokens: int = 0, kv_ref: str = "bandwidth", weight_scale: float = 1.0, kv_elem_scale: float = 1.0) -> float:
+    """Mean modelled decode seconds per problem.
+
+    The base cost is the measured step model alpha/B + gamma + beta_eager * t (what every cell
+    actually runs on this implementation).  A KV saving (bits below the reference width outside the
+    full-precision residual tail, or keys not read) removes beta_ref * saved_tokens per step.
+    ``weight_scale`` / ``kv_elem_scale`` scale alpha and the KV term for the fp16-projected reference (Q2)."""
+    a, g, be = float(lm["alpha_s"]) * weight_scale, float(lm["gamma_s"]), float(lm["beta_s"]) * kv_elem_scale
+    br = _beta(lm, kv_ref) * kv_elem_scale
+    tot = 0.0
+    for p, n in zip(prompts, n_gens):
+        n = int(n)
+        if n <= 0:
+            continue
+        t = float(p) + np.arange(n, dtype=float)
+        base = n * (a / batch_size + g) + be * t.sum()
+        # tokens actually read at full width: residual tail at full width, the rest at kv_scale, times keep
+        quant_part = np.clip(t - residual_tokens, 0.0, None)
+        eff_tokens = keep_frac_eff * (quant_part * kv_scale + (t - quant_part))
+        saved = (t - eff_tokens).sum()
+        tot += base - br * saved
+    return tot / max(1, len(prompts))
+
+
+def cost_ratio(lm: Dict, batch_size: int, cell_prompts, cell_gens, ref_prompts, ref_gens, kv_bits: int = 16, keep_frac_eff: float = 1.0, residual_tokens: int = 0, kv_ref: str = "bandwidth") -> float:
+    """Modelled energy of a simulated cell divided by the modelled energy of the reference run.
+    Multiplying the *measured* reference energy per problem by this ratio gives the cell's energy,
+    with token inflation entering through ``cell_gens`` (theory/03 §1)."""
+    if lm.get("source") != "latency_bench":
+        return float("nan")
+    ref_bits = float(lm.get("ref_kv_bits", 32))
+    s = min(float(kv_bits), ref_bits) / ref_bits if kv_bits < 16 else 1.0
+    num = decode_cost_s(lm, batch_size, cell_prompts, cell_gens, kv_scale=s, keep_frac_eff=keep_frac_eff, residual_tokens=residual_tokens if kv_bits < 16 else 0, kv_ref=kv_ref)
+    den = decode_cost_s(lm, batch_size, ref_prompts, ref_gens)
+    return float(num / den) if den > 0 else float("nan")
+
+
+def fp16_projection_ratio(lm: Dict, batch_size: int, prompts, gens, fp16_weight_bytes: float = 3.09e9) -> float:
+    """Roofline projection of the fp32 reference to an fp16 deployment (Q2): weight reads scale with
+    weight bytes, the KV term with element width (1/2).  Secondary column only."""
+    if lm.get("source") != "latency_bench":
+        return float("nan")
+    ws = fp16_weight_bytes / float(lm["w_bytes"])
+    return float(decode_cost_s(lm, batch_size, prompts, gens, weight_scale=ws, kv_elem_scale=0.5) / decode_cost_s(lm, batch_size, prompts, gens))

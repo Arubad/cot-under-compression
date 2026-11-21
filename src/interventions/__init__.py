@@ -15,7 +15,7 @@ from .weight_quant import make_quant_config
 
 
 def build_intervention(icfg: Dict) -> Tuple[Optional[object], Optional[object], SparseConfig]:
-    quant = make_quant_config(int(icfg.get("weight_bits", 16)), icfg.get("weight_method", "bnb"))
+    quant = make_quant_config(int(icfg.get("weight_bits", 16)), icfg.get("weight_method", "bnb"), icfg.get("weight_compute_dtype", "float32"))
     cache_factory = make_cache_factory(
         bits=int(icfg.get("kv_bits", 16)),
         scheme=icfg.get("kv_scheme", "per_token"),
@@ -23,6 +23,7 @@ def build_intervention(icfg: Dict) -> Tuple[Optional[object], Optional[object], 
         sink_tokens=int(icfg.get("kv_sink_tokens", 0)),
         quantise_prefill=bool(icfg.get("kv_quantise_prefill", False)),
         backend=icfg.get("kv_backend", "fake"),
+        residual_tokens=int(icfg.get("kv_residual_tokens", 64)),
     )
     sp = SparseConfig(
         method=icfg.get("sparsifier", "none"),

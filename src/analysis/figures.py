@@ -27,8 +27,48 @@ def load_all_metrics(results_root: str) -> Dict[str, List[Dict]]:
         with open(path) as f:
             m = json.load(f)
         exp = m.get("_meta", {}).get("experiment_id") or path.split(os.sep)[-3]
+        m["_path"] = path
         out.setdefault(exp, []).append(m)
     return out
+
+
+FRONTIER_EXPERIMENTS = ("I1_baseline", "I2_weight_sweep", "I3_kv_sweep", "I4_sparse_sweep")  # deployment configs on GSM8K
+
+
+def _knob_key(c: Dict) -> tuple:
+    return (int(c.get("weight_bits", 16) or 16), int(c.get("kv_bits", 16) or 16))
+
+
+def load_repeats(results_root: str) -> Dict[tuple, Dict]:
+    """I8 energy repeats keyed by (weight_bits, kv_bits)."""
+    p = os.path.join(results_root, "cache", "energy_repeats.json")
+    if not os.path.exists(p):
+        return {}
+    with open(p) as f:
+        reps = json.load(f)
+    return {_knob_key(v.get("cell", {})): v for v in reps.values() if isinstance(v, dict) and "cell" in v}
+
+
+def cell_energy(m: Dict, repeats: Dict[tuple, Dict], e_ref: float, kind: str = "bandwidth") -> float:
+    """Energy per problem of one cell.  Measured cells: I8 median if available, else the cell's own
+    measurement.  Simulated cells: reference energy x modelled cost ratio (Q14: kind = bandwidth | eager)."""
+    c = m.get("_meta", {}).get("cell", {})
+    cost = m["cost"]
+    if cost.get("simulated"):
+        r = cost.get(f"ratio_{kind}")
+        return float(e_ref * r) if r is not None and np.isfinite(e_ref) else float(cost.get("energy_j_per_problem", float("nan")))
+    rep = repeats.get(_knob_key(c))
+    if rep:
+        return float(rep["median"])
+    return float(cost.get("measured_energy_j_per_problem", cost["energy_j_per_problem"]))
+
+
+def reference_energy(allm: Dict, repeats: Dict[tuple, Dict]) -> float:
+    rep = repeats.get((16, 16))
+    if rep:
+        return float(rep["median"])
+    base = allm.get("I1_baseline", [])
+    return float(base[0]["cost"]["energy_j_per_problem"]) if base else float("nan")
 
 
 def _plt():
@@ -125,23 +165,34 @@ def analyze(results_root: str) -> Dict:
         fp16_acc = base[0]["accuracy"]["accuracy"]["mean"]
         report["H2"] = test_h2(perhead, pd.read_csv(stats_path), fp16_acc)
         fig_perhead(report["H2"], os.path.join(figdir, "fig3_perhead_entropy.png"))
-    # frontier over every cell that has cost numbers
-    rows = []
-    for exp, lst in allm.items():
-        for r in lst:
+    # frontier over the deployment configurations (I1-I4); per-head (I5), ARC (I6) and repeat (I7/I8) cells excluded
+    repeats = load_repeats(results_root)
+    e_ref = reference_energy(allm, repeats)
+    rows, rows_eager = [], []
+    for exp in FRONTIER_EXPERIMENTS:
+        for r in allm.get(exp, []):
             if "cost" in r and "accuracy" in r:
                 c = r["_meta"]["cell"]
-                rows.append({"name": f"{exp}:{r['_meta'].get('cell_name', c)}", "accuracy": r["accuracy"]["accuracy"]["mean"], "energy_j_per_problem": r["cost"]["energy_j_per_problem"], "mean_gen_tokens": r["accuracy"]["mean_gen_tokens"], "simulated": r["cost"].get("simulated", False), **{k: c.get(k) for k in ("weight_bits", "kv_bits", "kv_scheme", "sparsifier", "keep_frac")}})
+                row = {"name": f"{exp}:{r['_meta'].get('cell_name', c)}", "accuracy": r["accuracy"]["accuracy"]["mean"], "mean_gen_tokens": r["accuracy"]["mean_gen_tokens"], "token_inflation": r["accuracy"].get("token_inflation", 1.0), "simulated": r["cost"].get("simulated", False), **{k: c.get(k) for k in ("weight_bits", "kv_bits", "kv_scheme", "sparsifier", "keep_frac")}}
+                rows.append({**row, "energy_j_per_problem": cell_energy(r, repeats, e_ref, "bandwidth")})
+                rows_eager.append({**row, "energy_j_per_problem": cell_energy(r, repeats, e_ref, "eager")})
     if rows:
         ft = frontier_table(rows)
         ft.to_csv(os.path.join(figdir, "frontier_table.csv"), index=False)
         fig_frontier(ft, os.path.join(figdir, "fig4_frontier.png"))
         fv = h3_frontier_verdict(ft)
+        fte = frontier_table(rows_eager)
+        fte.to_csv(os.path.join(figdir, "frontier_table_eager_kv_reference.csv"), index=False)
         sel_path = os.path.join(results_root, "cache", "selector_table.parquet")
         sv = {"gain_points": float("nan")}
         if os.path.exists(sel_path):
-            sv = h3_selector_verdict(evaluate_selector(pd.read_parquet(sel_path)))
+            sel = evaluate_selector(pd.read_parquet(sel_path))
+            sv = h3_selector_verdict(sel)
+            sv["detail"] = sel
         report["H3"] = test_h3(fv, sv)
+        report["H3"]["secondary_eager_kv_reference"] = h3_frontier_verdict(fte)
+        report["H3"]["reference_energy_j_per_problem"] = e_ref
+        report["H3"]["fp16_projection"] = fp16_projection_table(allm, ft, results_root)
     ctrl = os.path.join(results_root, "cache", "control.json")
     if os.path.exists(ctrl):
         with open(ctrl) as f:
@@ -150,3 +201,29 @@ def analyze(results_root: str) -> Dict:
         json.dump(report, f, indent=2, default=float)
     print(json.dumps({k: (v.get("verdict", v.get("passed")) if isinstance(v, dict) else v) for k, v in report.items()}, indent=2, default=str))
     return report
+
+
+def fp16_projection_table(allm: Dict, ft: pd.DataFrame, results_root: str) -> Dict:
+    """Q2 secondary column: weight-arm savings against a roofline-projected fp16 reference."""
+    from ..harness.latency_bench import fp16_projection_ratio
+
+    lp = os.path.join(results_root, "cache", "latency_model.json")
+    base = allm.get("I1_baseline", [])
+    if not os.path.exists(lp) or not base:
+        return {}
+    with open(lp) as f:
+        lm = json.load(f)
+    gp = os.path.join(results_root, "cache", "fp16_gsm8k.parquet")
+    if not os.path.exists(gp):
+        return {}
+    g = pd.read_parquet(gp, columns=["prompt_tokens", "n_gen"])
+    ratio = fp16_projection_ratio(lm, 8, g["prompt_tokens"].tolist(), g["n_gen"].tolist())
+    ref = ft[(ft["weight_bits"].fillna(16) == 16) & (ft["kv_bits"].fillna(16) == 16) & (~ft["simulated"])]
+    if ref.empty or not np.isfinite(ratio):
+        return {"fp16_over_fp32_ratio": ratio}
+    e32 = float(ref["energy_j_per_problem"].iloc[0])
+    e16 = e32 * ratio
+    out = {"fp16_over_fp32_ratio": ratio, "reference_fp32_j": e32, "projected_fp16_j": e16, "weight_cells": {}}
+    for _, r in ft[(ft["weight_bits"].fillna(16) < 16)].iterrows():
+        out["weight_cells"][r["name"]] = {"energy_j": float(r["energy_j_per_problem"]), "saving_vs_fp32": 1 - float(r["energy_j_per_problem"]) / e32, "saving_vs_fp16_projected": 1 - float(r["energy_j_per_problem"]) / e16}
+    return out

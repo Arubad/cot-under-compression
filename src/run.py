@@ -128,24 +128,53 @@ def _fit_latency_model(records: List[Dict], model, cfg: Dict, watts: float) -> D
     return fit
 
 
-def _simulated_energy(cfg: Dict, lm: Dict, mean_prompt: float, mean_gen: float) -> float:
-    """Energy per problem for fake-quant KV / sparse cells from the benchmarked step model (theory/03 §2).
+def _keep_frac_eff(cfg: Dict) -> float:
+    """Fraction of cached keys actually read.  GQA: masking a subset of query heads saves no KV reads."""
+    i = cfg["intervention"]
+    if i.get("sparsifier", "none") == "none" or float(i.get("keep_frac", 1.0)) >= 1.0 or i.get("head") is not None:
+        return 1.0
+    n_layers = int(cfg["model"].get("n_layers", 28))
+    layers = i.get("layer")
+    frac_layers = 1.0 if layers is None else (len(layers) if isinstance(layers, list) else 1) / n_layers
+    return 1.0 - (1.0 - float(i["keep_frac"])) * frac_layers
 
-    KV bytes scale with kv_bits relative to the reference element width; sparsity scales the KV bytes read
-    by the effective kept fraction (GQA: masking a subset of query heads saves no KV reads).  Combined
-    weight-quantised + simulated cells are not modelled (NaN)."""
-    from .harness.latency_bench import simulated_energy_per_problem
+
+def reference_energy_j(task: str) -> Optional[float]:
+    """Measured energy per problem of the reference: the I8 repeat median if it exists, else I1."""
+    p = os.path.join(_cache_dir(), "energy_repeats.json")
+    if os.path.exists(p):
+        with open(p) as f:
+            reps = json.load(f)
+        for k, v in reps.items():
+            if k.startswith("weight_bits16_kv_bits16") and task == "gsm8k":
+                return float(v["median"])
+    for root in (os.path.join(results_root(), "I1_baseline", "single"), os.path.join(results_root(), f"I0_reference_{task}", "single")):
+        mp = os.path.join(root, "metrics.json")
+        if os.path.exists(mp):
+            with open(mp) as f:
+                m = json.load(f)
+            if task == "gsm8k" or root.endswith(f"I0_reference_{task}/single"):
+                return float(m["cost"].get("measured_energy_j_per_problem", m["cost"]["energy_j_per_problem"]))
+    return None
+
+
+def _simulated_cost(cfg: Dict, lm: Dict, records: List[Dict], ref: List[Dict]) -> Dict:
+    """Ratios of modelled decode cost (cell / reference) for fake-quant KV and sparse cells (D-004, Q14).
+
+    Energy = measured reference energy per problem x ratio, so token inflation enters through the cell's
+    own generation lengths and the fake-quant cache's bookkeeping overhead never enters the number.
+    Combined weight-quantised + simulated cells are not modelled (NaN)."""
+    from .harness.latency_bench import cost_ratio
 
     i = cfg["intervention"]
     if int(i.get("weight_bits", 16)) < 16:
-        return float("nan")
-    f = 1.0
-    if i.get("sparsifier", "none") != "none" and float(i.get("keep_frac", 1.0)) < 1.0 and i.get("head") is None:
-        n_layers = int(cfg["model"].get("n_layers", 28))
-        layers = i.get("layer")
-        frac_layers = 1.0 if layers is None else (len(layers) if isinstance(layers, list) else 1) / n_layers
-        f = 1.0 - (1.0 - float(i["keep_frac"])) * frac_layers
-    return simulated_energy_per_problem(lm, int(cfg["generation"]["batch_size"]), mean_prompt, mean_gen, kv_bits=int(i.get("kv_bits", 16)), keep_frac_eff=f)
+        return {"ratio_bandwidth": float("nan"), "ratio_eager": float("nan")}
+    B = int(cfg["generation"]["batch_size"])
+    kw = dict(kv_bits=int(i.get("kv_bits", 16)), keep_frac_eff=_keep_frac_eff(cfg), residual_tokens=int(i.get("kv_residual_tokens", 64)))
+    by = {r["id"]: r for r in ref}
+    cp, cg = [r["prompt_tokens"] for r in records], [r["n_gen"] for r in records]
+    rp, rg = [by[r["id"]]["prompt_tokens"] for r in records if r["id"] in by], [by[r["id"]]["n_gen"] for r in records if r["id"] in by]
+    return {f"ratio_{k}": cost_ratio(lm, B, cp, cg, rp, rg, kv_ref=k, **kw) for k in ("bandwidth", "eager")}
 
 
 # ----------------------------------------------------------------------------- one cell
@@ -167,7 +196,14 @@ def run_cell(cfg: Dict, skip_existing: bool = False) -> Optional[Dict]:
     task = cfg["task"]["dataset"]
     problems = _problems(cfg)
     pmeta = _meta_frame(cfg, problems)
-    fp16 = load_fp16_records(task)
+    i0 = cfg["intervention"]
+    is_reference = int(i0.get("weight_bits", 16)) >= 16 and int(i0.get("kv_bits", 16)) >= 16 and (i0.get("sparsifier", "none") == "none" or float(i0.get("keep_frac", 1.0)) >= 1.0)
+    if os.path.exists(_fp16_path(task)):
+        fp16 = load_fp16_records(task)
+    elif is_reference:
+        fp16 = None  # first reference run on a new task (e.g. ARC, I6) becomes that task's reference cache
+    else:
+        raise FileNotFoundError(f"{_fp16_path(task)} missing: run the reference cell of this task first")
     quant, cache_factory, sp = build_intervention(cfg["intervention"])
     tok, model = _load_model(cfg, quant)
     apply_sparse(model, sp)
@@ -179,22 +215,31 @@ def run_cell(cfg: Dict, skip_existing: bool = False) -> Optional[Dict]:
     with PowerMeter(poll_hz=float(cfg["cost"]["poll_hz"]), fallback_w_active=float(cfg["cost"].get("fallback_w_active", 70.0))) as pm:
         records = run_generation(model, tok, problems, task, int(g["max_new_tokens"]), int(g["batch_size"]), topk=int(g.get("topk", 16)), cache_factory=cache_factory, desc=cell_name(cfg.get("_cell", {})))
     apply_sparse(model, type(sp)(method="none"))
+    if fp16 is None:
+        pd.DataFrame(records).to_parquet(_fp16_path(task), index=False)
+        fp16 = records
     acc = accuracy_table(records, pmeta, fp16, n_boot=int(cfg["metrics"]["bootstrap_resamples"]))
     div = divergence_summary(records, fp16)
     per_problem = div.pop("per_problem")
     n_tok = sum(r["n_gen"] for r in records)
     pw = pm.summary()
-    cost = {"measured_energy_j_per_problem": pw["energy_j"] / len(records), "wall_s": pw["wall_s"], "tokens_per_s": n_tok / max(1e-9, pw["wall_s"]), "mean_w": pw["mean_w"], "energy_source": pw["energy_source"], "peak_mem_gb": (torch.cuda.max_memory_allocated() / 1e9) if torch.cuda.is_available() else float("nan")}
+    cost = {"measured_energy_j_per_problem": pw["energy_j"] / len(records), "polled_energy_j_per_problem": pw["polled_energy_j"] / len(records), "energy_source": pw["energy_source"], "wall_s": pw["wall_s"], "tokens_per_s": n_tok / max(1e-9, pw["wall_s"]), "mean_w": pw["mean_w"], "peak_mem_gb": (torch.cuda.max_memory_allocated() / 1e9) if torch.cuda.is_available() else float("nan")}
     i = cfg["intervention"]
     simulated = (int(i.get("kv_bits", 16)) < 16 and i.get("kv_backend", "fake") == "fake") or (i.get("sparsifier", "none") != "none" and float(i.get("keep_frac", 1.0)) < 1.0)
     lm = _latency_model(cfg)
     if simulated:
-        # No benchmarked model -> NaN, never the measured number: fake-quant / masked cells run at
-        # reference speed, so their wall-clock energy is not the intervention's energy.
-        cost["energy_j_per_problem"] = _simulated_energy(cfg, lm, float(np.mean([r["prompt_tokens"] for r in records])), float(np.mean([r["n_gen"] for r in records]))) if lm else float("nan")
+        # Never the measured number: fake-quant / masked cells run at reference speed (plus fake-quant
+        # overhead), so their wall-clock energy is not the intervention's energy.
+        e_ref = reference_energy_j(task)
+        ratios = _simulated_cost(cfg, lm, records, fp16) if lm else {"ratio_bandwidth": float("nan"), "ratio_eager": float("nan")}
+        cost.update(ratios)
+        cost["reference_energy_j_per_problem"] = e_ref if e_ref is not None else float("nan")
+        cost["energy_j_per_problem"] = (e_ref * ratios["ratio_bandwidth"]) if e_ref is not None else float("nan")       # primary (Q14)
+        cost["energy_j_per_problem_eager"] = (e_ref * ratios["ratio_eager"]) if e_ref is not None else float("nan")    # secondary
         cost["simulated"] = True
     else:
         cost["energy_j_per_problem"] = cost["measured_energy_j_per_problem"]
+        cost["energy_j_per_problem_eager"] = cost["measured_energy_j_per_problem"]
         cost["simulated"] = False
     pd.DataFrame(records).drop(columns=["topk_ids", "topk_logprobs"]).assign(**{k: [r[k] for r in per_problem] for k in ("first_divergence", "mean_kl_before_divergence", "argmax_agreement")}).to_parquet(os.path.join(d, "generations.parquet"), index=False)
     metrics = {"accuracy": acc, "divergence": div, "cost": cost, "n_problems": len(records), "acc_mean": acc["accuracy"]["mean"], "gap_to_fp16": acc.get("gap_to_fp16", {}).get("mean"), "median_first_div": div["median_first_divergence"].get("mean"), "energy_j_per_problem": cost["energy_j_per_problem"], "simulated_energy": cost["simulated"]}
@@ -221,7 +266,8 @@ def cmd_control(args, cfg: Optional[Dict] = None, model_tok=None):
     problems = _problems(cfg)[: int(cfg["baseline"].get("control_problems", 50))]
     tok, model = model_tok or _load_model(cfg)
     g = cfg["generation"]
-    res = zero_change_control(model, tok, problems, cfg["task"]["dataset"], int(g["max_new_tokens"]), int(g["batch_size"]))
+    ref = load_fp16_records(cfg["task"]["dataset"]) if os.path.exists(_fp16_path(cfg["task"]["dataset"])) and not getattr(args, "no_reference", False) else None
+    res = zero_change_control(model, tok, problems, cfg["task"]["dataset"], int(g["max_new_tokens"]), int(g["batch_size"]), reference_records=ref)
     with open(os.path.join(_cache_dir(), "control.json"), "w") as f:
         json.dump(res, f, indent=2)
     print("ZERO-CHANGE CONTROL:", json.dumps(res, indent=2))
@@ -252,7 +298,7 @@ def cmd_baseline(args):
     # FP16 greedy cache with head statistics recorded in the same pass
     apply_sparse(model, SparseConfig(method="none", record_entropy=True))
     with PowerMeter(poll_hz=float(cfg["cost"]["poll_hz"]), fallback_w_active=float(cfg["cost"].get("fallback_w_active", 70.0))) as pm:
-        fp16 = run_generation(model, tok, problems, task, int(g["max_new_tokens"]), int(g["batch_size"]), topk=int(g.get("topk", 16)), desc="I1 fp16 greedy")
+        fp16 = run_generation(model, tok, problems, task, int(g["max_new_tokens"]), int(g["batch_size"]), topk=int(g.get("topk", 16)), desc="I1 reference greedy")
     from .interventions import sparsify as _sp
 
     stats = stats_frame(_sp.SPARSE.summary())
@@ -284,7 +330,10 @@ def _prepare(base: Dict) -> Dict:
 
 def cmd_sweep(args):
     base = _prepare(load_yaml(args.config))
-    for cell in iter_cells(base, minimum=args.minimum):
+    key = "cells_minimum" if args.minimum and "cells_minimum" in base else ("cells" if "cells" in base and not args.minimum else None)
+    cells = list(base[key]) if key else list(iter_cells(base, minimum=args.minimum))
+    base.pop("cells", None); base.pop("cells_minimum", None)
+    for cell in cells:
         cfg = resolve(base, cell)
         print(f"\n===== cell {cell_name(cell)}  hash {config_hash(cfg)} =====")
         run_cell(cfg, skip_existing=args.skip_existing)
@@ -313,47 +362,52 @@ def cmd_perhead(args):
 
 
 def cmd_frontier(args):
-    """I7: build the selector table from every finished cell and run energy repeats on the headline configs."""
-    from .analysis.figures import load_all_metrics
+    """I8 energy repeats on the headline (measured) configs, then the I7 selector table from the
+    deployment cells (I1-I4) with energies from analysis.figures.cell_energy."""
+    from .analysis.figures import FRONTIER_EXPERIMENTS, cell_energy, load_all_metrics, load_repeats, reference_energy
     from .harness.power import median_with_spread
 
     base = _prepare(load_yaml(args.config))
     rr = results_root()
+    reps = int(base["cost"].get("repeats", 3))
+    rpath = os.path.join(_cache_dir(), "energy_repeats.json")
+    out = json.load(open(rpath)) if os.path.exists(rpath) else {}
+    for cell in base.get("headline_cells", []) if not args.selector_only else []:
+        cfg = resolve(base, cell)
+        es, srcs = [], []
+        for r in range(reps):
+            cfg_r = dict(cfg)
+            cfg_r["_cell"] = {**cell, "repeat": r}
+            m = run_cell(cfg_r, skip_existing=args.skip_existing)
+            if m is None:  # skipped: read the finished repeat
+                with open(os.path.join(run_dir(cfg_r), "metrics.json")) as f:
+                    m = json.load(f)
+            es.append(m["cost"]["measured_energy_j_per_problem"])
+            srcs.append(m["cost"].get("energy_source"))
+        out[cell_name(cell)] = {**median_with_spread(es), "values": es, "energy_source": srcs, "cell": cell}
+        with open(rpath, "w") as f:
+            json.dump(out, f, indent=2)
+    print(json.dumps(out, indent=2))
+
     allm = load_all_metrics(rr)
+    repeats = load_repeats(rr)
+    e_ref = reference_energy(allm, repeats)
     task = base["task"]["dataset"]
     diff = pd.read_parquet(os.path.join(_cache_dir(), f"difficulty_{task}.parquet"))
     rows = []
-    for exp, lst in allm.items():
-        for m in lst:
-            gpath = os.path.join(m["_meta"]["run_dir"], "generations.parquet")
+    for exp in FRONTIER_EXPERIMENTS:
+        for m in allm.get(exp, []):
+            gpath = os.path.join(_cache_dir(), f"fp16_{task}.parquet") if exp.startswith("I1") else os.path.join(os.path.dirname(m["_path"]), "generations.parquet")
             if not os.path.exists(gpath) or "cost" not in m:
                 continue
             gdf = pd.read_parquet(gpath)[["id", "correct", "n_gen"]]
-            e_tok = m["cost"]["energy_j_per_problem"] / max(1e-9, gdf["n_gen"].mean())
+            e_tok = cell_energy(m, repeats, e_ref) / max(1e-9, gdf["n_gen"].mean())
             name = "fp16" if exp.startswith("I1") else f"{exp}:{m['_meta'].get('cell_name', '')}"
-            gdf = gdf.assign(config=name, energy_j=gdf["n_gen"] * e_tok)
-            rows.append(gdf)
+            rows.append(gdf.assign(config=name, energy_j=gdf["n_gen"] * e_tok))
     if rows:
         table = pd.concat(rows).merge(diff[["id", "q_tokens", "n_numbers", "q_chars", "first_entropy"]], on="id", how="left")
         table.to_parquet(os.path.join(_cache_dir(), "selector_table.parquet"), index=False)
         print("selector table:", table["config"].nunique(), "configs x", table["id"].nunique(), "problems")
-    # energy repeats on headline configs (measured arms only)
-    reps = int(base["cost"].get("repeats", 3))
-    out = {}
-    for cell in base.get("headline_cells", []):
-        cfg = resolve(base, cell)
-        es = []
-        for r in range(reps):
-            cfg_r = dict(cfg)
-            cfg_r["_cell"] = {**cell, "repeat": r}
-            m = run_cell(cfg_r)
-            if m:
-                es.append(m["cost"]["measured_energy_j_per_problem"])
-        if es:
-            out[cell_name(cell)] = median_with_spread(es)
-    with open(os.path.join(_cache_dir(), "energy_repeats.json"), "w") as f:
-        json.dump(out, f, indent=2)
-    print(json.dumps(out, indent=2))
 
 
 def cmd_analyze(args):
@@ -380,6 +434,43 @@ def cmd_latency(args):
     print(json.dumps({k: v for k, v in fit.items() if k != "points"}, indent=2))
 
 
+def cmd_headstats(args):
+    """Q12: per-head sink share and top-1% mass on the first N reference problems, plus each head's
+    output-projection norm ||W_O[:, head]|| (Q4 covariate).  Merged into results/cache/head_stats.csv;
+    I1's entropy and top-10% mass columns (which fixed the I5 layer subset) are left untouched."""
+    from .harness.generate import run_generation
+    from .interventions import sparsify as _sp
+    from .interventions.sparsify import SparseConfig, apply_sparse
+    from .metrics.entropy import stats_frame
+
+    cfg = resolve(load_yaml(args.config), {})
+    task = cfg["task"]["dataset"]
+    problems = _problems(cfg)[: int(args.n)]
+    tok, model = _load_model(cfg)
+    g = cfg["generation"]
+    apply_sparse(model, SparseConfig(method="none", record_entropy=True))
+    run_generation(model, tok, problems, task, int(g["max_new_tokens"]), int(g["batch_size"]), topk=1, desc="head stats")
+    new = stats_frame(_sp.SPARSE.summary())
+    apply_sparse(model, SparseConfig(method="none"))
+    hd = model.config.hidden_size // model.config.num_attention_heads
+    wo = []
+    for l, layer in enumerate(model.model.layers):
+        W = layer.self_attn.o_proj.weight.detach().float()
+        for h in range(model.config.num_attention_heads):
+            wo.append({"layer": l, "head": h, "wo_norm": float(W[:, h * hd:(h + 1) * hd].norm())})
+    new = new.merge(pd.DataFrame(wo), on=["layer", "head"], how="left")
+    path = os.path.join(_cache_dir(), "head_stats.csv")
+    old = pd.read_csv(path) if os.path.exists(path) else pd.DataFrame()
+    keep = ["layer", "head", "sink_share", "top1pct_mass", "wo_norm"]
+    if not old.empty:
+        old = old[[c for c in old.columns if c not in ("sink_share", "top1pct_mass", "wo_norm", "entropy_headstats_pass", "topk_mass_headstats_pass")]]
+        merged = old.merge(new[keep + ["entropy", "topk_mass"]].rename(columns={"entropy": "entropy_headstats_pass", "topk_mass": "topk_mass_headstats_pass"}), on=["layer", "head"], how="left")
+    else:
+        merged = new
+    merged.to_csv(path, index=False)
+    print(merged.groupby("layer")[["entropy", "sink_share", "top1pct_mass", "wo_norm"]].mean().round(3).to_string())
+
+
 def cmd_smoke(args):
     from .smoke import run_smoke
 
@@ -391,12 +482,14 @@ def main(argv=None):
     import_previous_results()
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("make_subset", cmd_make_subset), ("baseline", cmd_baseline), ("control", cmd_control), ("frontier", cmd_frontier)):
+    for name, fn in (("make_subset", cmd_make_subset), ("baseline", cmd_baseline), ("control", cmd_control)):
         s = sub.add_parser(name); s.add_argument("--config", required=True); s.set_defaults(fn=fn)
+    s = sub.add_parser("frontier"); s.add_argument("--config", required=True); s.add_argument("--skip-existing", action="store_true"); s.add_argument("--selector-only", action="store_true"); s.set_defaults(fn=cmd_frontier)
     for name, fn in (("sweep", cmd_sweep), ("perhead", cmd_perhead)):
         s = sub.add_parser(name); s.add_argument("--config", required=True); s.add_argument("--minimum", action="store_true"); s.add_argument("--skip-existing", action="store_true"); s.set_defaults(fn=fn)
     s = sub.add_parser("analyze"); s.add_argument("--results", default=None); s.set_defaults(fn=cmd_analyze)
     s = sub.add_parser("latency"); s.add_argument("--config", required=True); s.set_defaults(fn=cmd_latency)
+    s = sub.add_parser("headstats"); s.add_argument("--config", required=True); s.add_argument("--n", type=int, default=100); s.set_defaults(fn=cmd_headstats)
     s = sub.add_parser("smoke"); s.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct"); s.set_defaults(fn=cmd_smoke)
     args = p.parse_args(argv)
     args.fn(args)

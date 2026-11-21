@@ -25,8 +25,8 @@ Methods (``keep_frac`` = fraction of currently valid keys kept, per query):
                      spirit of LevAttention's leverage scores (proxy: squared key norm)
 
 Entropy recorder (``record_entropy=True``, run at FP16 with method none): accumulates,
-per (layer, head), the mean attention entropy and the mass on the top 10% of keys
-over all decode positions, used to pick the 6-layer subset and to test H2.
+per (layer, head), the mean attention entropy, the mass on the top 10% and top 1% of keys and
+the sink share (mass on the first valid key, Q12) over all decode positions, used to pick the 6-layer subset and to test H2.
 """
 from __future__ import annotations
 
@@ -62,7 +62,8 @@ class SparseConfig:
     def summary(self) -> Dict:
         out = {}
         for (l, h), s in self.stats.items():
-            out[f"{l}.{h}"] = {"layer": l, "head": h, "entropy": s["ent_sum"] / max(1, s["n"]), "topk_mass": s["mass_sum"] / max(1, s["n"]), "n": s["n"]}
+            n = max(1, s["n"])
+            out[f"{l}.{h}"] = {"layer": l, "head": h, "entropy": s["ent_sum"] / n, "topk_mass": s["mass_sum"] / n, "top1pct_mass": s.get("mass1_sum", float("nan")) / n, "sink_share": s.get("sink_sum", float("nan")) / n, "n": s["n"]}
         return out
 
 
@@ -176,9 +177,14 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
     if layer_on:
         b, h, q, k = scores.shape
         # HF masks add finfo.min (not -inf) to causal/padded positions; treat anything near it as masked
-        valid = torch.isfinite(scores) & (scores > torch.finfo(scores.dtype).min * 0.5)
+        valid_all = torch.isfinite(scores) & (scores > torch.finfo(scores.dtype).min * 0.5)
+        # Only the selected heads are ranked (the mask is identical; single-head cells run cheaper).
+        hidx = sorted(hset) if hset is not None else None
+        sc = scores[:, hidx] if hidx is not None else scores
+        valid = valid_all[:, hidx] if hidx is not None else valid_all
         n_valid = valid.sum(-1, keepdim=True)
         n_keep = torch.clamp((cfg.keep_frac * n_valid.float()).ceil().long(), min=1)
+        hs = sc.shape[1]
         if cfg.method in ("sliding_window", "sink_window"):
             pos = torch.arange(k, device=scores.device).view(1, 1, 1, k)
             cur = torch.where(valid, pos, torch.full_like(pos, -1).expand_as(valid)).amax(-1, keepdim=True)
@@ -188,23 +194,25 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
                 first = torch.where(valid, pos, torch.full_like(pos, k).expand_as(valid)).amin(-1, keepdim=True)
                 keep |= (pos >= first) & (pos < first + cfg.sink_tokens) & valid
         elif cfg.method == "topk_heavy_hitter":
-            ranks = scores.masked_fill(~valid, float("-inf")).argsort(dim=-1, descending=True).argsort(dim=-1)
+            ranks = sc.masked_fill(~valid, float("-inf")).argsort(dim=-1, descending=True).argsort(dim=-1)
             keep = (ranks < n_keep) & valid
         elif cfg.method == "leverage":
-            norm = (key_states.float() ** 2).sum(-1).unsqueeze(2).expand(b, h, q, k)  # [b, h, q, k]
+            ks = key_states[:, hidx] if hidx is not None else key_states
+            norm = (ks.float() ** 2).sum(-1).unsqueeze(2).expand(b, hs, q, k)  # [b, h', q, k]
             ranks = norm.masked_fill(~valid, float("-inf")).argsort(dim=-1, descending=True).argsort(dim=-1)
             keep = (ranks < n_keep) & valid
         else:
             raise ValueError(cfg.method)
-        if hset is not None:
-            head_mask = torch.zeros(h, dtype=torch.bool, device=scores.device)
-            head_mask[list(hset)] = True
-            keep = torch.where(head_mask.view(1, h, 1, 1), keep, valid)
         # Rows with no valid key (left-padding query positions) must be left exactly as eager leaves
         # them (all finfo.min -> finite uniform softmax).  Filling them with -inf gives NaN, the NaN
         # enters the pad position's K/V, and 0 * NaN poisons every real token in the batch (SMOKE-04).
         keep = keep | (n_valid == 0)
-        scores = scores.masked_fill(~keep, float("-inf"))
+        if hidx is not None:
+            sub = sc.masked_fill(~keep, float("-inf"))
+            scores = scores.clone()
+            scores[:, hidx] = sub
+        else:
+            scores = scores.masked_fill(~keep, float("-inf"))
 
     attn = torch.softmax(scores, dim=-1, dtype=torch.float32).to(query.dtype)
     if dropout > 0.0 and module.training:
@@ -219,14 +227,24 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
             srt = a.sort(dim=-1, descending=True).values
             cum = srt.cumsum(-1)
             mass = cum.gather(-1, (top_n - 1).unsqueeze(-1)).squeeze(-1)  # [b, h, q]
+            top_n1 = torch.clamp((0.01 * n_valid.float()).ceil().long(), min=1)
+            mass1 = cum.gather(-1, (top_n1 - 1).unsqueeze(-1)).squeeze(-1)
+            # sink share (Q12): attention mass on the first *valid* key (left padding shifts it)
+            vmask = torch.isfinite(scores) & (scores > torch.finfo(scores.dtype).min * 0.5)
+            first = vmask.float().argmax(-1, keepdim=True)  # first True along k
+            sink = a.gather(-1, first).squeeze(-1)
             # only decode positions (q == 1) and the last prefill position carry useful statistics
             sel = slice(-1, None)
             e = ent[:, :, sel].mean(dim=(0, 2))
             m = mass[:, :, sel].mean(dim=(0, 2))
+            m1 = mass1[:, :, sel].mean(dim=(0, 2))
+            sk = sink[:, :, sel].mean(dim=(0, 2))
             for hh in range(a.shape[1]):
-                st = cfg.stats.setdefault((layer_idx, hh), {"ent_sum": 0.0, "mass_sum": 0.0, "n": 0})
+                st = cfg.stats.setdefault((layer_idx, hh), {"ent_sum": 0.0, "mass_sum": 0.0, "mass1_sum": 0.0, "sink_sum": 0.0, "n": 0})
                 st["ent_sum"] += float(e[hh])
                 st["mass_sum"] += float(m[hh])
+                st["mass1_sum"] += float(m1[hh])
+                st["sink_sum"] += float(sk[hh])
                 st["n"] += 1
 
     out = torch.matmul(attn, value_states).transpose(1, 2).contiguous()

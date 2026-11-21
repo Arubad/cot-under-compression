@@ -31,6 +31,8 @@ class PowerMeter:
         self.t_start = 0.0
         self.t_end = 0.0
         self._handle = None
+        self._e0_mj: Optional[int] = None
+        self._e1_mj: Optional[int] = None
 
     def _init_nvml(self) -> bool:
         try:
@@ -55,8 +57,17 @@ class PowerMeter:
                 pass
             self._stop.wait(period)
 
+    def _counter_mj(self) -> Optional[int]:
+        """Hardware cumulative energy counter (mJ since driver load); None if not exposed."""
+        try:
+            return int(self._pynvml.nvmlDeviceGetTotalEnergyConsumption(self._handle))
+        except Exception:
+            return None
+
     def __enter__(self):
         self.available = self._init_nvml()
+        if self.available:
+            self._e0_mj = self._counter_mj()
         self.t_start = time.time()
         if self.available:
             self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -65,6 +76,8 @@ class PowerMeter:
 
     def __exit__(self, *exc):
         self.t_end = time.time()
+        if self.available and self._e0_mj is not None:
+            self._e1_mj = self._counter_mj()
         if self._thread:
             self._stop.set()
             self._thread.join(timeout=2.0)
@@ -79,15 +92,31 @@ class PowerMeter:
         return float(np.mean(self.samples)) if self.samples else float("nan")
 
     @property
+    def counter_energy_j(self) -> float:
+        if self._e0_mj is None or self._e1_mj is None or self._e1_mj < self._e0_mj:
+            return float("nan")
+        return (self._e1_mj - self._e0_mj) / 1000.0
+
+    @property
+    def polled_energy_j(self) -> float:
+        if len(self.samples) >= 2:
+            trapezoid = getattr(np, "trapezoid", None) or np.trapz  # np.trapz was removed in NumPy 2.x
+            return float(trapezoid(self.samples, self.times))
+        return float("nan")
+
+    @property
     def energy_j(self) -> float:
-        """Trapezoidal integral of the power trace; fallback W_active * wall time."""
+        """Primary: NVML hardware energy counter (amendment 2026-11-21, Q5).  Then the 10 Hz polled
+        trapezoid; then W_active * wall time."""
+        if np.isfinite(self.counter_energy_j):
+            return self.counter_energy_j
         if len(self.samples) >= 2:
             trapezoid = getattr(np, "trapezoid", None) or np.trapz  # np.trapz was removed in NumPy 2.x
             return float(trapezoid(self.samples, self.times))
         return self.fallback_w * self.wall_s
 
     def summary(self) -> Dict[str, float]:
-        return {"energy_j": self.energy_j, "wall_s": self.wall_s, "mean_w": self.mean_w, "n_samples": len(self.samples), "nvml_available": self.available, "energy_source": "nvml" if len(self.samples) >= 2 else "fallback_model"}
+        return {"energy_j": self.energy_j, "wall_s": self.wall_s, "mean_w": self.mean_w, "n_samples": len(self.samples), "nvml_available": self.available, "energy_source": "nvml_counter" if np.isfinite(self.counter_energy_j) else ("nvml_polled" if len(self.samples) >= 2 else "fallback_model"), "counter_energy_j": self.counter_energy_j, "polled_energy_j": self.polled_energy_j}
 
 
 def median_with_spread(values: List[float]) -> Dict[str, float]:
