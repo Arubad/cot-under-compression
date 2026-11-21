@@ -184,7 +184,9 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
             cur = torch.where(valid, pos, torch.full_like(pos, -1).expand_as(valid)).amax(-1, keepdim=True)
             keep = (pos > cur - n_keep) & (pos <= cur) & valid
             if cfg.method == "sink_window":
-                keep |= (pos < cfg.sink_tokens) & valid
+                # sinks are the first *valid* positions; with left padding absolute 0..s-1 are pads
+                first = torch.where(valid, pos, torch.full_like(pos, k).expand_as(valid)).amin(-1, keepdim=True)
+                keep |= (pos >= first) & (pos < first + cfg.sink_tokens) & valid
         elif cfg.method == "topk_heavy_hitter":
             ranks = scores.masked_fill(~valid, float("-inf")).argsort(dim=-1, descending=True).argsort(dim=-1)
             keep = (ranks < n_keep) & valid
@@ -198,6 +200,10 @@ def sparse_attention_forward(module, query, key, value, attention_mask, scaling:
             head_mask = torch.zeros(h, dtype=torch.bool, device=scores.device)
             head_mask[list(hset)] = True
             keep = torch.where(head_mask.view(1, h, 1, 1), keep, valid)
+        # Rows with no valid key (left-padding query positions) must be left exactly as eager leaves
+        # them (all finfo.min -> finite uniform softmax).  Filling them with -inf gives NaN, the NaN
+        # enters the pad position's K/V, and 0 * NaN poisons every real token in the batch (SMOKE-04).
+        keep = keep | (n_valid == 0)
         scores = scores.masked_fill(~keep, float("-inf"))
 
     attn = torch.softmax(scores, dim=-1, dtype=torch.float32).to(query.dtype)

@@ -71,6 +71,12 @@ SWEEP_KEY_PATHS: Dict[str, str] = {
     "keep_frac": "intervention.keep_frac",
     "layer": "intervention.layer",
     "head": "intervention.head",
+    "weight_method": "intervention.weight_method",
+    "kv_backend": "intervention.kv_backend",
+    "kv_group_size": "intervention.kv_group_size",
+    "kv_sink_tokens": "intervention.kv_sink_tokens",
+    "kv_quantise_prefill": "intervention.kv_quantise_prefill",
+    "sparse_sink_tokens": "intervention.sparse_sink_tokens",
     # repo 3
     "method": "unlearn.method",
     "forget_frac": "unlearn.forget_frac",
@@ -84,6 +90,9 @@ def resolve(config: Dict[str, Any], cell: Dict[str, Any] | None = None) -> Dict[
     cfg = copy.deepcopy(config)
     cfg.pop("sweep", None)
     for k, v in (cell or {}).items():
+        if k not in SWEEP_KEY_PATHS and "." not in k and k not in cfg:
+            # An unmapped key would land at the top level and be silently ignored (SMOKE-04: kv_backend).
+            raise KeyError(f"cell key {k!r} has no entry in SWEEP_KEY_PATHS and is not a top-level config key")
         _set_dotted(cfg, SWEEP_KEY_PATHS.get(k, k), v)
     cfg["_cell"] = dict(cell or {})
     return cfg

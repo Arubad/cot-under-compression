@@ -1,6 +1,6 @@
 # I1 — fp32 reference: accuracy, trajectory cache, difficulty strata, head statistics, latency fit
 
-**Status:** ⏳ prediction written 2026-11-21 (frozen at launch)
+**Status:** 🔄 running. Launched 2026-11-21 08:16 UTC on Colab T4 at commit `30249b4`, where the prediction below is frozen
 **Hypotheses served:** all three. Every later number is relative to this run. · **Theory:** [01 §5](../theory/01_persistence_model_H1.md), [02 §3, §5](../theory/02_heavy_attention_H2.md), [03 §2–3](../theory/03_cost_model_H3.md)
 
 ## 1. Question
@@ -18,7 +18,7 @@ What does the unperturbed model do on the frozen 300-problem GSM8K subset? This 
 | Head statistics | Many heads put > 50 % mass on position 0 (sinks) from layer ~2 on; layers 0–1 have the highest entropy; top-10 % mass > 0.9 for most mid-layer heads | Attention-sink literature; this sets up the leverage-vs-top-k gap (theory/02 §3) |
 | Mean power while decoding | 60–70 W | SMOKE-03: 67 W against a 70 W cap |
 | Decode step time at B = 8 | 40–120 ms | Roofline floor W/BW = 19 ms. Eager fp32 attention, padding and the 151 k-vocab fp32 LM head add 2–6× |
-| Latency-model KV slope | KV term < 10 % of step time at t ≤ 1342 | theory/03 Table 2.1 |
+| Latency-model KV slope | KV term < 10 % of step time at t ≤ 1342 | theory/03 Table 2.1. *Note (post-launch, D-004): the in-run fit cannot identify this; it is tested with the latency micro-benchmark instead. This note does not change the prediction* |
 | Energy per problem | 100–500 J | ~50–100 ms/step × 512 steps per batch × 65 W / 8 problems |
 
 **What would surprise us:**

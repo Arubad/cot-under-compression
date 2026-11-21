@@ -35,3 +35,5 @@ colab download -s cot-t4 /content/<id>_results.tgz results/archive/
 - **Don't chain `colab upload … && colab exec …` in one shell command.** In this environment the `exec` hung both times. Run them as separate commands.
 - No SSH key exists locally, so use `exec` with Python/`!` lines instead of `colab ssh`.
 - Colab's stack is Python 3.13, torch 2.14, transformers 5.22 and **NumPy 2** (removed `np.trapz`). See D-003.
+- CPU unit tests run locally in the repo's `.venv` (torch 2.15, transformers 5.22.2): `.venv/bin/python -m pytest -q tests`. Don't run tests on the GPU VM while a measured job is running, because CPU contention perturbs its timing and energy.
+- Only one measured job per GPU at a time, for the same reason.

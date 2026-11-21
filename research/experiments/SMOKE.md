@@ -19,7 +19,20 @@ The control is bit-exact on every path (cache path at 16 bits, sparse function a
 | SMOKE-01 | Kaggle, `db2dc4f`, fp16 | ❌ NaN logprobs | fp16 overflow → D-001 (fp32) |
 | SMOKE-02 | Kaggle, `16d79df`, fp32 | ❌ sparse path 12/12 mismatched | mask not registered for the custom attention → fixed in `939eb32` |
 | SMOKE-03 | Colab T4, `939eb32`, fp32, transformers 5.22.1 | ✅ **0/12 cache, 0/12 sparse mismatches, max \|Δlogprob\| = 0.0** | crashed after I1-smoke generation: `np.trapz` removed in NumPy 2 → fixed |
-| SMOKE-04 | Colab T4, `939eb32` + NumPy-2 fix | _running_ | |
+| SMOKE-04 | Colab T4, `939eb32` + NumPy-2 fix | ✅ (same as SMOKE-03) | All generation cells ran; analysis crashed on `None` keys. **Diagnostics exposed 3 harness bugs and a broken cost model** (D-004, D-005), all fixed and unit-tested before any sweep |
+
+SMOKE-04 per-cell diagnostics (30 problems, 64 tokens, so accuracies are meaningless and only *relative* behaviour counts):
+
+| Cell | acc | median T_div | E/problem | Verdict |
+|---|---|---|---|---|
+| reference | 0.133 | — | 118.7 J measured (66.8 W, 35.7 tok/s) | OK |
+| INT8 weights (LLM.int8) | 0.10 | 9 | 105.1 J measured | runs; **activations cast to fp16** → Q9 |
+| KV INT4 per-token (fake) | 0.0 | 1 | −150 J simulated | plausible (key outliers) → verify, Q11. Energy: broken fit, D-004 |
+| KV INT4 per-channel (fake) | 0.267 | 17.5 | −172 J simulated | plausible |
+| KV INT4 `quanto` / `hqq` | identical to fake | | | **bug:** backend key ignored (D-005.3); must be re-run |
+| top-k 50 %, all heads | 0.0 | 0 | −77 J | **bug:** pad-row NaN (D-005.1) |
+| leverage 50 %, single head L3 H0 | 0.0 | 0 | −77 J | **bug:** pad-row NaN (D-005.1). One of 336 heads cannot do this |
+| in-run latency fit | BW 0.27 GB/s, c = −23 s, r² 0.67 | | | **not identifiable** at these lengths (theory/03 §2.1) → D-004 |
 
 Side findings in SMOKE-03:
 - The sparse function now receives a float additive mask `(8, 1, 830, 830)`. The 8-shot prompt plus a question is about 830 tokens.
@@ -28,5 +41,9 @@ Side findings in SMOKE-03:
 ## 5. Interpretation
 The controlled-measurement claim of the whole study rests on this gate. SMOKE-03 shows that, under the new stack, the instrumentation (custom cache, custom attention and entropy recorder) adds zero numerical change. Every later difference against the reference can therefore be attributed to the intervention, not to the harness.
 
+The smoke run did its job twice over. Beyond confirming the control, the theory predictions served as a bug detector. "A single head out of 336 cannot cause divergence at token 0" (theory/02 §4) and "simulated energy cannot be negative" pointed straight at the NaN bug and at the cost model. Without those priors, both would have looked like findings.
+
 ## 6. Next
-When SMOKE-04 completes: record the backend availability (`quanto`, `hqq`, bitsandbytes INT8) and per-cell timing, then launch I1.
+- **SMOKE-05** (short, after I1 frees the GPU): re-run the smoke test at the fix commit. Expected: single-head T_div well above 0, top-k 50 % close to the reference, `quanto`/`hqq` genuinely exercised, and then their availability on T4 recorded (REVIEW §6.2).
+- Run `python -m src.run latency --config configs/baseline.yaml` once to produce the cost model.
+- I1 was launched in parallel (it uses none of the buggy paths).

@@ -166,3 +166,16 @@ if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
             fn(); print("ok", name)
+
+
+def test_resolve_routes_intervention_keys_and_rejects_unknown():
+    """SMOKE-04: kv_backend was not in SWEEP_KEY_PATHS, landed at the top level and was ignored."""
+    import pytest
+    from src.common.config import resolve
+
+    base = {"intervention": {"kv_backend": "fake", "kv_sink_tokens": 0}, "seed": 0}
+    cfg = resolve(base, {"kv_backend": "hf_quanto", "kv_sink_tokens": 4})
+    assert cfg["intervention"]["kv_backend"] == "hf_quanto" and cfg["intervention"]["kv_sink_tokens"] == 4
+    assert "kv_backend" not in cfg
+    with pytest.raises(KeyError):
+        resolve(base, {"kv_bakend": "hf_quanto"})

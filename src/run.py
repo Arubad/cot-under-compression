@@ -120,23 +120,32 @@ def _fit_latency_model(records: List[Dict], model, cfg: Dict, watts: float) -> D
         per_tok.append(wall / steps / len(rs))  # per sequence-token (batch amortised)
     fit = fit_latency_model(seq, per_tok, wb, kv_per_tok) if len(seq) >= 3 else {"bandwidth_bytes_per_s": float("nan"), "overhead_s": float("nan"), "r2": float("nan"), "kv_exceeds_weights_at_tokens": float("nan")}
     fit.update({"w_bytes": wb, "kv_bytes_per_token_fp16": kv_per_tok, "watts": watts, "n_layers": n_layers, "n_kv_heads": n_kv, "head_dim": head_dim})
-    with open(os.path.join(_cache_dir(), "latency_model.json"), "w") as f:
+    # Diagnostic only: this in-run fit cannot identify bandwidth at GSM8K lengths (SMOKE-04).  The cost
+    # model for simulated cells comes from `python -m src.run latency` (latency_model.json).
+    fit["source"] = "in_run_fit_diagnostic"
+    with open(os.path.join(_cache_dir(), "latency_model_inrun.json"), "w") as f:
         json.dump(fit, f, indent=2)
     return fit
 
 
 def _simulated_energy(cfg: Dict, lm: Dict, mean_prompt: float, mean_gen: float) -> float:
-    """Energy per problem from the latency model, with KV bytes scaled by kv bits and keep fraction and weight bytes by weight bits."""
+    """Energy per problem for fake-quant KV / sparse cells from the benchmarked step model (theory/03 §2).
+
+    KV bytes scale with kv_bits relative to the reference element width; sparsity scales the KV bytes read
+    by the effective kept fraction (GQA: masking a subset of query heads saves no KV reads).  Combined
+    weight-quantised + simulated cells are not modelled (NaN)."""
+    from .harness.latency_bench import simulated_energy_per_problem
+
     i = cfg["intervention"]
-    wb = lm["w_bytes"] * int(i.get("weight_bits", 16)) / 16.0
-    kvb = lm["kv_bytes_per_token_fp16"] * int(i.get("kv_bits", 16)) / 16.0 * float(i.get("keep_frac", 1.0))
-    bw, c, w = lm["bandwidth_bytes_per_s"], lm["overhead_s"], lm["watts"]
-    if not np.isfinite(bw) or bw <= 0:
+    if int(i.get("weight_bits", 16)) < 16:
         return float("nan")
-    total = 0.0
-    for t in range(int(mean_gen)):
-        total += (wb + kvb * (mean_prompt + t)) / bw + c
-    return float(total * w)
+    f = 1.0
+    if i.get("sparsifier", "none") != "none" and float(i.get("keep_frac", 1.0)) < 1.0 and i.get("head") is None:
+        n_layers = int(cfg["model"].get("n_layers", 28))
+        layers = i.get("layer")
+        frac_layers = 1.0 if layers is None else (len(layers) if isinstance(layers, list) else 1) / n_layers
+        f = 1.0 - (1.0 - float(i["keep_frac"])) * frac_layers
+    return simulated_energy_per_problem(lm, int(cfg["generation"]["batch_size"]), mean_prompt, mean_gen, kv_bits=int(i.get("kv_bits", 16)), keep_frac_eff=f)
 
 
 # ----------------------------------------------------------------------------- one cell
@@ -179,8 +188,10 @@ def run_cell(cfg: Dict, skip_existing: bool = False) -> Optional[Dict]:
     i = cfg["intervention"]
     simulated = (int(i.get("kv_bits", 16)) < 16 and i.get("kv_backend", "fake") == "fake") or (i.get("sparsifier", "none") != "none" and float(i.get("keep_frac", 1.0)) < 1.0)
     lm = _latency_model(cfg)
-    if simulated and lm:
-        cost["energy_j_per_problem"] = _simulated_energy(cfg, lm, float(np.mean([r["prompt_tokens"] for r in records])), float(np.mean([r["n_gen"] for r in records])))
+    if simulated:
+        # No benchmarked model -> NaN, never the measured number: fake-quant / masked cells run at
+        # reference speed, so their wall-clock energy is not the intervention's energy.
+        cost["energy_j_per_problem"] = _simulated_energy(cfg, lm, float(np.mean([r["prompt_tokens"] for r in records])), float(np.mean([r["n_gen"] for r in records]))) if lm else float("nan")
         cost["simulated"] = True
     else:
         cost["energy_j_per_problem"] = cost["measured_energy_j_per_problem"]
@@ -351,6 +362,24 @@ def cmd_analyze(args):
     analyze(args.results or results_root())
 
 
+def cmd_latency(args):
+    """Decode-latency micro-benchmark -> results/cache/latency_model.json (cost model for simulated cells)."""
+    from .harness.latency_bench import run_bench
+    from .harness.power import PowerMeter
+
+    cfg = resolve(load_yaml(args.config), {})
+    tok, model = _load_model(cfg)
+    with PowerMeter(poll_hz=float(cfg["cost"]["poll_hz"]), fallback_w_active=float(cfg["cost"].get("fallback_w_active", 70.0))) as pm:
+        fit = run_bench(model, watts=float(cfg["cost"].get("fallback_w_active", 70.0)))
+    pw = pm.summary()
+    if np.isfinite(pw["mean_w"]):
+        fit["watts"] = pw["mean_w"]
+    fit["power"] = pw
+    with open(os.path.join(_cache_dir(), "latency_model.json"), "w") as f:
+        json.dump(fit, f, indent=2)
+    print(json.dumps({k: v for k, v in fit.items() if k != "points"}, indent=2))
+
+
 def cmd_smoke(args):
     from .smoke import run_smoke
 
@@ -367,6 +396,7 @@ def main(argv=None):
     for name, fn in (("sweep", cmd_sweep), ("perhead", cmd_perhead)):
         s = sub.add_parser(name); s.add_argument("--config", required=True); s.add_argument("--minimum", action="store_true"); s.add_argument("--skip-existing", action="store_true"); s.set_defaults(fn=fn)
     s = sub.add_parser("analyze"); s.add_argument("--results", default=None); s.set_defaults(fn=cmd_analyze)
+    s = sub.add_parser("latency"); s.add_argument("--config", required=True); s.set_defaults(fn=cmd_latency)
     s = sub.add_parser("smoke"); s.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct"); s.set_defaults(fn=cmd_smoke)
     args = p.parse_args(argv)
     args.fn(args)

@@ -68,3 +68,20 @@ def test_sparse_actually_changes_something(tiny):
         out = tiny(input_ids=ids, attention_mask=mask).logits
     apply_sparse(tiny, SparseConfig(method="none"))
     assert not torch.allclose(ref[:, -1], out[:, -1])
+
+
+@pytest.mark.parametrize("method", ["sliding_window", "sink_window", "topk_heavy_hitter", "leverage"])
+@pytest.mark.parametrize("heads", [None, 0])
+def test_sparse_with_left_padding_is_finite_and_padding_invariant(tiny, method, heads):
+    """SMOKE-04: masking a left-padded batch filled pad-query rows with -inf -> NaN -> 0*NaN poisoned
+    every real token, so a single sparsified head diverged at token 0.  The sparsified output of a
+    padded sequence must be finite and match the same sequence run without padding."""
+    ids, mask = _batch()
+    cfg = SparseConfig(method=method, keep_frac=0.5, layers=0 if heads is not None else None, heads=heads, sink_tokens=1)
+    apply_sparse(tiny, cfg)
+    with torch.no_grad():
+        padded = tiny(input_ids=ids, attention_mask=mask).logits
+        alone = tiny(input_ids=ids[1:, 2:], attention_mask=mask[1:, 2:]).logits
+    apply_sparse(tiny, SparseConfig(method="none"))
+    assert torch.isfinite(padded[mask.bool()]).all()
+    torch.testing.assert_close(padded[1, 2:], alone[0], atol=1e-4, rtol=1e-4)

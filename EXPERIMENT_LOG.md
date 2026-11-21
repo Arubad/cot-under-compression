@@ -61,3 +61,30 @@ _(real entries start below)_
 - Diagnosis: transformers' mask builder selects a mask function by `config._attn_implementation`. Our custom "sparse" implementation was registered with `AttentionInterface` but not `AttentionMaskInterface`, so it did not receive the eager float additive mask. Reproduced on CPU with a 2-layer random Qwen2 and left padding: the padded sequence diverges (new `tests/test_sparse_control_cpu.py`, fails on `16d79df`, passes after the fix).
 - Control status: FAIL on `16d79df` (harness-level).
 - Next change: register `eager_mask` for "sparse" in `AttentionMaskInterface`; `sparse_attention_forward` also normalises None / bool masks to float additive and prints the mask kind it receives once. Smoke prints torch/transformers versions. Re-run smoke.
+
+## 2026-11-21 — SMOKE-03 — first Colab smoke test: zero-change control passes; NumPy-2 crash
+
+- Config: src/smoke.py defaults (fp32)
+- Git commit: `939eb32` (shipped as `git archive`)
+- Model / task / n_problems: Qwen2.5-1.5B-Instruct / GSM8K / 30 (12 control)
+- Hardware: Colab Tesla T4 15 GB, driver 580.82.07; Python 3.13.16, torch 2.14.1+cu130, transformers 5.22.1, NumPy 2
+- Expected: control bit-exact on all three paths after the SMOKE-02 mask fix.
+- Observed: `cache_path_mismatches: 0`, `sparse_path_mismatches: 0`, `max_abs_logprob_diff_sparse_vs_eager: 0.0`, no NaN. The sparse function receives a float mask (8, 1, 830, 830). Crashed in `PowerMeter.energy_j`: `np.trapz` removed in NumPy 2. NVML on the Colab T4 reports power (67 W against a 70 W cap) and a cumulative energy counter.
+- Control status: **PASS** on `939eb32`.
+- Next change: `np.trapezoid` fallback; re-run.
+
+## 2026-11-21 — SMOKE-04 — smoke re-run: all cells run; diagnostics expose three harness bugs and a broken cost model
+
+- Config: src/smoke.py defaults (fp32); git commit `939eb32` + NumPy-2 fix (uncommitted, shipped by hand)
+- Hardware / stack: as SMOKE-03
+- Expected: every cell runs or fails attributably.
+- Observed: every generation cell ran; the final `analyze` crashed on `None` keys in `pareto.aggressiveness`. Per-cell diagnostics are in research/experiments/SMOKE.md. Single-head (L3 H0) and all-head top-k sparsification diverged at token 0 with acc 0 (pad-row NaN). `quanto`/`hqq` were identical to fake (the backend key was dropped by `resolve`). In-run latency fit: BW 0.27 GB/s, intercept −23 s, giving negative simulated energies. KV INT4 per-token T_div 1, per-channel T_div 17.5. LLM.int8 casts activations to fp16.
+- Control status: PASS (as SMOKE-03).
+- Next change: fixes and decisions D-004 / D-005 in research/decisions.md, with regression tests (22 tests pass). SMOKE-05 re-run at the fix commit after I1. Open PI questions Q9–Q11.
+
+## 2026-11-21 — I1 — fp32 reference on the frozen GSM8K-300 subset (LAUNCHED)
+
+- Config: configs/baseline.yaml; git commit `30249b4`; subset frozen in the same commit (tertile boundaries 94 / 140)
+- Hardware: Colab T4 (`cot-t4`), as SMOKE-03
+- Expected: see research/experiments/I1_baseline.md §2 (accuracy 62–74 %, < 3 % truncated, strata easy 40–60 / medium 25–40 / hard 8–20 %, control bit-exact on 50).
+- Observed: _(running; the harness appends its own entry on the VM, which is copied here on completion)_

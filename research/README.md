@@ -50,8 +50,8 @@ These come out of [`theory/`](theory/). They are *not* pre-registered tests, but
 
 | ID | Question | Page | Status | Headline |
 |---|---|---|---|---|
-| SMOKE | Does every code path run, and does the zero-change control pass? | [experiments/SMOKE.md](experiments/SMOKE.md) | 🔄 running on Colab T4 (SMOKE-03) | — |
-| I1 | FP32 reference: accuracy, cache, difficulty labels, head statistics, latency fit | [experiments/I1_baseline.md](experiments/I1_baseline.md) | ⏳ prediction written | — |
+| SMOKE | Does every code path run, and does the zero-change control pass? | [experiments/SMOKE.md](experiments/SMOKE.md) | 🟡 control ✅; 3 bugs + cost model fixed; SMOKE-05 re-run pending | control bit-exact on Colab T4 |
+| I1 | FP32 reference: accuracy, cache, difficulty labels, head statistics | [experiments/I1_baseline.md](experiments/I1_baseline.md) | 🔄 running on Colab T4 since 08:16 UTC (`30249b4`) | — |
 | I2 | INT4 (NF4) / INT8 weights | [experiments/I2_weights.md](experiments/I2_weights.md) | ⏳ | — |
 | I3 | KV INT8 / INT4 (/ INT2) per-token (/ per-channel) | [experiments/I3_kv.md](experiments/I3_kv.md) | ⏳ | — |
 | I4 | Sparse attention: sink+window, top-k at 50 % | [experiments/I4_sparse.md](experiments/I4_sparse.md) | ⏳ | — |
@@ -61,7 +61,10 @@ These come out of [`theory/`](theory/). They are *not* pre-registered tests, but
 | I8 | Energy repeats on headline configs | [experiments/I6_I8_controls_energy.md](experiments/I6_I8_controls_energy.md) | ⏳ | — |
 
 ### Current blockers
-- None yet. Watch [`open_questions.md`](open_questions.md) for items waiting on the PI.
+- **Before I2:** Q9 (weight-arm compute dtype) and Q1 (amendments), both PI decisions.
+- **Before I3:** Q3 (censoring-aware primary H1 statistic, PI amendment) and Q11 (verify the per-token collapse).
+- **Before I5:** Q4 (continuous outcomes, PI amendment).
+- See [`open_questions.md`](open_questions.md).
 
 ---
 
