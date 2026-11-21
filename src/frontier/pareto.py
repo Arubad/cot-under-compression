@@ -34,7 +34,11 @@ def pareto_front(df: pd.DataFrame, cost_col: str, gain_col: str) -> List[int]:
 
 def aggressiveness(row: Dict) -> float:
     """Higher = more aggressive (lower bits, fewer keys kept).  Used only to name 'the most aggressive configuration'."""
-    wb, kb, kf = float(row.get("weight_bits", 16)), float(row.get("kv_bits", 16)), float(row.get("keep_frac", 1.0))
+    def _num(key, default):  # rows can carry the key with a None value (e.g. the reference row)
+        v = row.get(key)
+        return float(default if v is None else v)
+
+    wb, kb, kf = _num("weight_bits", 16), _num("kv_bits", 16), _num("keep_frac", 1.0)
     return (16 - wb) / 16 + (16 - kb) / 16 + (1 - kf)
 
 

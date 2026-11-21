@@ -268,6 +268,6 @@ def choose_layer_subset(stats: Dict, n_layers_total: int, n_pick: int = 6) -> li
         return list(np.linspace(0, n_layers_total - 1, n_pick).round().astype(int))
     layers = sorted(per_layer)
     means = np.array([np.mean(per_layer[l]) for l in layers])
-    order = np.argsort(means)
+    order = np.argsort(means, kind="stable")  # ties -> lower layer index (rule fixed in research/experiments/I5_perhead.md)
     picks = np.linspace(0, len(order) - 1, n_pick).round().astype(int)
     return sorted(int(layers[order[p]]) for p in picks)

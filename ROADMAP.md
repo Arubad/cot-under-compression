@@ -25,7 +25,9 @@ Ten weeks, one project at a time, minimum-viable version first. Tick boxes as yo
 - [x] `src/metrics`: accuracy by tertile within strata, first-divergence token, truncated top-k KL, token inflation; paired bootstrap — written, unit-tested
 - [x] `src/frontier`: pynvml polling, latency model, energy per correct answer, Pareto sets, per-problem selector with CV — written, unit-tested
 - [x] `src/analysis`: pre-registered H1/H2/H3 tests, Figures 1–4 — written
-- [ ] `notebooks/00_smoke_test` passes on Kaggle (every code path, 30 problems); backend availability logged
+- [x] Research notebook set up (`research/`): status board, theory for H1/H2/H3, experiment pages, decision log, compute ledger — 2026-11-21
+- [x] Compute moved to Colab T4 via the `colab` CLI (Kaggle occupied; D-002); stack verified, 11/11 unit tests pass on Colab — 2026-11-21
+- [ ] Smoke test passes end to end (every code path, 30 problems; Colab T4 instead of Kaggle); backend availability logged
 - [ ] **Expected-to-fail control passes:** zero-change run is bit-exact against the fp16 cache on 50 problems (logged)
 - [ ] Smoke-test results recorded: which KV backends run on T4; whether pynvml power is exposed on Kaggle/Colab; fp16 vs fp32 decision
 

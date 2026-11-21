@@ -82,7 +82,8 @@ class PowerMeter:
     def energy_j(self) -> float:
         """Trapezoidal integral of the power trace; fallback W_active * wall time."""
         if len(self.samples) >= 2:
-            return float(np.trapz(self.samples, self.times))
+            trapezoid = getattr(np, "trapezoid", None) or np.trapz  # np.trapz was removed in NumPy 2.x
+            return float(trapezoid(self.samples, self.times))
         return self.fallback_w * self.wall_s
 
     def summary(self) -> Dict[str, float]:

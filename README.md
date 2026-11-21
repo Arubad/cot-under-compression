@@ -9,6 +9,7 @@
 | [`ROADMAP.md`](ROADMAP.md) | Milestones as GitHub task lists. Tick them off; this is the progress tracker. |
 | [`EXPERIMENT_LOG.md`](EXPERIMENT_LOG.md) | Append-only log, one entry per configuration run, expectation written before launch. |
 | [`READING.md`](READING.md) | Ordered reading list with the reason for each item. |
+| [`research/`](research/README.md) | Research notebook: hypothesis status board, theory derivations behind each prediction, one page per experiment (prediction frozen before launch), decision log, compute ledger, open questions, Colab runbook. |
 
 **Problem in one sentence.** We measure how weight quantisation, KV-cache quantisation and attention sparsification each degrade chain-of-thought reasoning on a small instruct model, locate *where* in the chain the damage starts, and put every configuration on an energy-per-correct-answer frontier that includes the extra tokens cheap inference makes the model emit.
 

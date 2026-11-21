@@ -127,4 +127,11 @@ def git_commit_short() -> str:
 
         return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
+        pass
+    # Shipped as a `git archive` tarball (Colab): tools/colab/ship.sh writes GIT_COMMIT at the repo root.
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "GIT_COMMIT")
+    try:
+        with open(path) as f:
+            return f.read().strip() or "unknown"
+    except OSError:
         return "unknown"
