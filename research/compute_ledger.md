@@ -12,3 +12,4 @@ Budget: minimum version ~18 T4-hours, full version ~100 (README §5). Wall-clock
 | 2026-11-21 | LAT-01 + Q11 | Colab | T4 | 0.45 | 2.9 | setup at `be82d77`, latency bench (65 s measured), Q11 and Q11b diagnostics |
 | 2026-11-21 | SMOKE-05 | Colab | T4 | 0.4 | 3.3 | including the OOM relaunch; session `cot-t4` stopped afterwards |
 | 2026-11-21 | (debug) | Colab | CPU | 0.05 | — | `cot-cpu` session, created then stopped; tests ran locally in `.venv` instead |
+| 2026-11-21 | q1 day 1 (control, LAT rerun, headstats, I3 ×2 + partial INT2) | Colab | T4 | 1.6 | 4.9 | commit `de32b6c`; session reclaimed ~16:00 UTC by the free-tier cap |

@@ -107,3 +107,15 @@ _(real entries start below)_
 - Observed: top-k 50 % acc 0.167 / T_div 62.5; single head acc 0.167 / T_div 37.5; KV per-token 0.0 / 1, per-channel 0.267 / 17.5; INT8 weights 0.10 / 9. `hf_quanto` and `hf_hqq` raise ImportError (packages not installed on Colab). First attempt OOM'd on GPU memory held by the Colab kernel after the in-kernel Q11 scripts; relaunched after tools/colab/free_gpu.py. Full run completed with "SMOKE OK".
 - Control status: **PASS**.
 - Next change: none for the harness. Installing `optimum-quanto` / `hqq` is optional (they are only a cross-check backend).
+
+## 2026-11-21 — q1 queue (day 1) — control, LAT-01 rerun, head stats, I3 INT8/INT4 per-token + tail
+- Git commit: `de32b6c` (amendments A1–A9); Colab T4 session `cot-t4`, same stack as I1 (torch 2.14.1+cu130, transformers 5.22.1, NumPy 2.4.6); 34/34 unit tests pass on the VM
+- **Control** (50 problems): cache / sparse paths 0 mismatches, max |Δlogprob| 0.0, and **0/50 mismatches against the cached I1 reference** (new check). PASS. Cross-session determinism holds, so cells from different VMs and days can be combined.
+- **LAT-01 rerun:** α 36.3 ms, γ 0.42 ms, β 4.79 µs per token per sequence, r² 0.995 (first run: 35.1 / 0.64 / 4.69). 65.8 W.
+- **headstats** (100 problems): sink share, top-1 % mass and ‖W_O‖ merged into `head_stats.csv`. I1 columns unchanged.
+- **I3 INT8 per-token + 64 tail** (hash `d8a8fbada0c4`): Expected (frozen): ≥ 60 % censored, KM median ∞, |gap| ≤ 1.5 pt. Observed: acc 65.0 % [59.7, 70.3], gap −0.3 pt, token count 1.00× the reference, **76 % censored, KM median ∞** (CI lower bound 216), hazard 2.15e-3 per token. 19.0 min, 36.1 tok/s, 7.9 GB peak. Measured 249.9 J/problem (counter; polled 250.3). Simulated energy: primary 277 J (ratio 0.978), eager 191 J (0.672), both × the I1 reference of 283 J until I8. ✅ as predicted.
+- **I3 INT4 per-token + 64 tail** (hash `9a1044994f1f`): Expected: KM median 15–120, gap 2–10 pt, token count 1.00–1.10×. Observed: acc 52.3 % [47.0, 58.7], **gap 12.3 pt**, **KM median 8 tokens [7, 11]**, 2 % censored, hazard 6.75e-2, **token count 0.93×**. Tertile gaps 11 / 13 / 13 pt (flat). 18.8 min. Primary 256 J (0.904), eager 162 J (0.573). ❌ worse and earlier than predicted, with shorter chains.
+- Hazard ratio INT4/INT8 ≈ 31 → β ≈ 1.2 (theory: β ≈ 1; two points only).
+- Note: the counter-measured energy of the two fake-quant cells (≈ 248–250 J) is ~12 % below I1's polled reference (283 J, another session). The I8 repeats re-measure the reference with the counter. Until then the simulated energies above are provisional.
+- **Session reclaimed at ~16:00 UTC (free-tier cap)** during INT2 (≈ 25 % done; partial cell lost, reruns). Saved: `results/archive/q1_live.tgz` (15:49 UTC). Remaining queue resumes the next day.
+- Next change: none. Resume the same queue with `--skip-existing` (the first three commands are already done and are dropped from the resumed queue).
