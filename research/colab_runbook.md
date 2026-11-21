@@ -37,3 +37,6 @@ colab download -s cot-t4 /content/<id>_results.tgz results/archive/
 - Colab's stack is Python 3.13, torch 2.14, transformers 5.22 and **NumPy 2** (removed `np.trapz`). See D-003.
 - CPU unit tests run locally in the repo's `.venv` (torch 2.15, transformers 5.22.2): `.venv/bin/python -m pytest -q tests`. Don't run tests on the GPU VM while a measured job is running, because CPU contention perturbs its timing and energy.
 - Only one measured job per GPU at a time, for the same reason.
+- **`colab exec -f` runs in the persistent Jupyter kernel.** A model loaded by an exec'd script stays in GPU memory after the script ends, and SMOKE-05's first launch OOM'd on exactly that (14.4 GB held). After any in-kernel GPU script, run `colab exec -s cot-t4 -f tools/colab/free_gpu.py </dev/null` before launching a job. Detached jobs (`launch.py`) are separate processes and are unaffected.
+- `colab download` needs a full destination *file* path. A bare directory fails with `Is a directory`.
+- Pack results on the VM with `tools/colab/pack.py` (env `JOB_ID`), which writes `/content/<JOB_ID>_results.tgz` including the job log.

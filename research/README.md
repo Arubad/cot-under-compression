@@ -42,7 +42,7 @@ These come out of [`theory/`](theory/). They are *not* pre-registered tests, but
 | T1.3 | INT8 KV will mostly not diverge within 512 tokens → first-divergence data are right-censored; medians need Kaplan–Meier | [H1 theory §5](theory/01_persistence_model_H1.md) | ⏳ |
 | T2.1 | Single-head output error ≤ 2·(dropped attention mass)·max‖v‖ → top-k mass should predict Δ at least as well as entropy (\|ρ_mass\| ≥ \|ρ_H\|) | [H2 theory §2](theory/02_heavy_attention_H2.md) | ⚠️ at risk: top-10 % mass is saturated in mid layers (I1), so range restriction may defeat it |
 | T2.2 | Single-head Δacc on 300 problems sits near the noise floor (SE ≈ 1.5–2.5 pt); ρ on raw accuracy will be attenuated, while a continuous outcome (KL, T_div) will not | [H2 theory §4](theory/02_heavy_attention_H2.md) | ⏳ |
-| T3.1 | With GQA (2 KV heads) at GSM8K lengths, KV bytes are ~1–10 % of per-sequence decode bytes → KV quantisation and sparsity buy < 10 % energy; the frontier is shaped by the weight axis | [H3 theory §2](theory/03_cost_model_H3.md) | 🟡 supported indirectly: I1 step ≈ 130 ms ≫ 19 ms roofline, so not bandwidth-bound; LAT-01 to measure |
+| T3.1 | With GQA (2 KV heads) at GSM8K lengths, KV bytes are ~1–10 % of per-sequence decode bytes → KV quantisation and sparsity buy < 10 % energy; the frontier is shaped by the weight axis | [H3 theory §2](theory/03_cost_model_H3.md) | ❌ for time, ✅ for bytes (LAT-01): eager KV moves at 12 GB/s, so KV is 46 % of step time at B = 8 against 9 % of bytes → Q14 |
 | T3.2 | A config beats the reference on E/correct iff e_c/e₀ < (a_c/a₀)·(L₀/L_c); token inflation of x % cancels x % of per-token savings | [H3 theory §3](theory/03_cost_model_H3.md) | ⏳ |
 | T3.3 | bitsandbytes NF4 on T4 is dequant-bound, not bandwidth-bound → measured per-token energy may be *higher* than the roofline predicts, possibly higher than the reference | [H3 theory §2.3](theory/03_cost_model_H3.md) | ⏳ |
 
@@ -52,6 +52,7 @@ These come out of [`theory/`](theory/). They are *not* pre-registered tests, but
 |---|---|---|---|---|
 | SMOKE | Does every code path run, and does the zero-change control pass? | [experiments/SMOKE.md](experiments/SMOKE.md) | 🟡 control ✅; 3 bugs + cost model fixed; SMOKE-05 re-run pending | control bit-exact on Colab T4 |
 | I1 | FP32 reference: accuracy, cache, difficulty labels, head statistics | [experiments/I1_baseline.md](experiments/I1_baseline.md) | ✅ done | **64.7 %** acc, 283 J/problem, control 50/50 bit-exact; tertile acc 84/63/47 % |
+| DIAG | Decode cost model (LAT-01); KV per-token collapse (Q11) | [experiments/DIAG_latency_kv.md](experiments/DIAG_latency_kv.md) | ✅ done | r² 0.996 cost fit; INT4 per-token collapse is real, keys only, and removed by a 64-token fp tail |
 | I2 | INT4 (NF4) / INT8 weights | [experiments/I2_weights.md](experiments/I2_weights.md) | ⏳ | — |
 | I3 | KV INT8 / INT4 (/ INT2) per-token (/ per-channel) | [experiments/I3_kv.md](experiments/I3_kv.md) | ⏳ | — |
 | I4 | Sparse attention: sink+window, top-k at 50 % | [experiments/I4_sparse.md](experiments/I4_sparse.md) | ⏳ | — |
@@ -62,7 +63,7 @@ These come out of [`theory/`](theory/). They are *not* pre-registered tests, but
 
 ### Current blockers
 - **Before I2:** Q9 (weight-arm compute dtype) and Q1 (amendments), both PI decisions.
-- **Before I3:** Q3 (censoring-aware primary H1 statistic, PI amendment) and Q11 (verify the per-token collapse).
+- **Before I3:** Q3 (censoring-aware primary H1 statistic) and **Q13 (per-token INT4 collapses as configured)**, both PI amendments. Q14 (KV cost reference) before any KV energy number.
 - **Before I5:** Q4 (continuous outcomes, PI amendment).
 - **Before I5:** Q12 (sink-share accumulator).
 - See [`open_questions.md`](open_questions.md).
