@@ -50,7 +50,7 @@ These come out of [`theory/`](theory/). They are *not* pre-registered tests, but
 
 | ID | Question | Page | Status | Headline |
 |---|---|---|---|---|
-| SMOKE | Does every code path run, and does the zero-change control pass? | [experiments/SMOKE.md](experiments/SMOKE.md) | 🟡 control ✅; 3 bugs + cost model fixed; SMOKE-05 re-run pending | control bit-exact on Colab T4 |
+| SMOKE | Does every code path run, and does the zero-change control pass? | [experiments/SMOKE.md](experiments/SMOKE.md) | ✅ gate passed (SMOKE-05) | control bit-exact; fixes verified on GPU; quanto/hqq not installed on Colab |
 | I1 | FP32 reference: accuracy, cache, difficulty labels, head statistics | [experiments/I1_baseline.md](experiments/I1_baseline.md) | ✅ done | **64.7 %** acc, 283 J/problem, control 50/50 bit-exact; tertile acc 84/63/47 % |
 | DIAG | Decode cost model (LAT-01); KV per-token collapse (Q11) | [experiments/DIAG_latency_kv.md](experiments/DIAG_latency_kv.md) | ✅ done | r² 0.996 cost fit; INT4 per-token collapse is real, keys only, and removed by a 64-token fp tail |
 | I2 | INT4 (NF4) / INT8 weights | [experiments/I2_weights.md](experiments/I2_weights.md) | ⏳ | — |

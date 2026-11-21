@@ -90,3 +90,20 @@ _(real entries start below)_
 - Observed: accuracy **64.7 %** [59.3, 70.0] on 300; 3/300 truncated; mean 137 generated tokens; strata easy 100 / medium 145 / hard 55 (greedy acc 95 / 63 / 15 %); tertile acc 84 / 63 / 47 %; control 0/50 mismatches on both paths, max |Δlogprob| 0.0; 67.0 W, **283 J/problem**, ≈130 ms/step at B = 8; top-10 % mass > 0.9 for 97 % of heads in layers 8–20, highest-entropy layers 27 and 1; in-run latency fit r² 0.04 (not identifiable, as D-004 expected). Config hash `90fe3aeb6018`; finished 10:03 UTC. Artefacts in `results/archive/I1_baseline/`.
 - Control status: **PASS** (50/50).
 - Next change: none needed for I1. Before I5, add a sink-share accumulator to the head recorder (Q12).
+
+## 2026-11-21 — LAT-01 and Q11 — decode cost model and KV per-token collapse diagnostics
+
+- Commit `be82d77` (LAT-01: `python -m src.run latency --config configs/baseline.yaml`) and `bea36fb` (tools/colab/q11_kv_recon.py and q11b_tail_ablation.py, 8 subset problems)
+- Hardware: Colab T4 `cot-t4`
+- Expected: KV < 10 % of step time (T3.1). Per-token INT4 collapse explained by key-outlier channels (Q11).
+- Observed: step = 35.1 ms + 0.64 ms·B + 4.69 µs·B·t (r² 0.996), so KV is 46 % of step time at B = 8, t = 900 (T3.1 refuted for time). The INT4 per-token collapse is real and comes from keys only. A 64-token fp tail cuts first-step KL from 9.8 to 0.09. Details in research/experiments/DIAG_latency_kv.md.
+- Next change: PI decisions Q13 (I3 tail) and Q14 (KV cost reference).
+
+## 2026-11-21 — SMOKE-05 — smoke re-run at the fix commit
+
+- Config: src/smoke.py defaults (fp32); git commit `be82d77`
+- Hardware: Colab T4 `cot-t4`, as SMOKE-03
+- Expected: single-head T_div well above 0, top-k close to the reference, quanto/hqq genuinely exercised.
+- Observed: top-k 50 % acc 0.167 / T_div 62.5; single head acc 0.167 / T_div 37.5; KV per-token 0.0 / 1, per-channel 0.267 / 17.5; INT8 weights 0.10 / 9. `hf_quanto` and `hf_hqq` raise ImportError (packages not installed on Colab). First attempt OOM'd on GPU memory held by the Colab kernel after the in-kernel Q11 scripts; relaunched after tools/colab/free_gpu.py. Full run completed with "SMOKE OK".
+- Control status: **PASS**.
+- Next change: none for the harness. Installing `optimum-quanto` / `hqq` is optional (they are only a cross-check backend).

@@ -1,6 +1,6 @@
 # SMOKE — harness smoke test and zero-change control
 
-**Status:** 🔄 SMOKE-04 running on Colab T4 (`cot-t4`)
+**Status:** ✅ gate passed (SMOKE-05 at `be82d77`, 2026-11-21)
 **Hypothesis served:** none, this is a harness gate · **Runs:** `EXPERIMENT_LOG.md` SMOKE-01 … SMOKE-04
 
 ## 1. Question
@@ -19,6 +19,7 @@ The control is bit-exact on every path (cache path at 16 bits, sparse function a
 | SMOKE-01 | Kaggle, `db2dc4f`, fp16 | ❌ NaN logprobs | fp16 overflow → D-001 (fp32) |
 | SMOKE-02 | Kaggle, `16d79df`, fp32 | ❌ sparse path 12/12 mismatched | mask not registered for the custom attention → fixed in `939eb32` |
 | SMOKE-03 | Colab T4, `939eb32`, fp32, transformers 5.22.1 | ✅ **0/12 cache, 0/12 sparse mismatches, max \|Δlogprob\| = 0.0** | crashed after I1-smoke generation: `np.trapz` removed in NumPy 2 → fixed |
+| SMOKE-05 | Colab T4, `be82d77` | ✅ | **All cells run, and the fixes are verified on GPU.** top-k 50 %: acc 0.167, T_div 62.5 (was 0). Single head L3 H0: acc 0.167, T_div 37.5 (was 0). KV per-token 0.0 / T_div 1 and per-channel 0.267 / 17.5, both unchanged and explained by DIAG B. `quanto` / `hqq` were **genuinely exercised this time** and are *unavailable*: `optimum-quanto` and `hqq` are not installed on Colab. LLM.int8 logs the fp32→fp16 cast (Q9). First launch OOM'd on GPU memory held by the Colab kernel (runbook gotcha) |
 | SMOKE-04 | Colab T4, `939eb32` + NumPy-2 fix | ✅ (same as SMOKE-03) | All generation cells ran; analysis crashed on `None` keys. **Diagnostics exposed 3 harness bugs and a broken cost model** (D-004, D-005), all fixed and unit-tested before any sweep |
 
 SMOKE-04 per-cell diagnostics (30 problems, 64 tokens, so accuracies are meaningless and only *relative* behaviour counts):

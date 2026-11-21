@@ -24,4 +24,4 @@ Owner **PI** means it needs your decision. Owner **Claude** means I can resolve 
 - 2026-11-21 — *Is NVML power readable on the T4 we use?* Yes, on Colab: instantaneous power and the cumulative energy counter (REVIEW §6 item 3).
 - 2026-11-21 — *Does the sparse path pass the zero-change control after the SMOKE-02 mask fix?* Yes: 0/12 mismatches, max |Δlogprob| = 0.0 (SMOKE-03).
 - 2026-11-21 — Q7: subset generated and committed (`30249b4`). Tertile boundaries 94 / 140 gold tokens, 100 problems per tertile.
-- 2026-11-21 — REVIEW §6 item 2 (HF `QuantizedCache` backends on T4): **not yet answered.** The smoke run's `quanto`/`hqq` cells silently ran the fake cache (D-005 item 3) and must be re-run.
+- 2026-11-21 — REVIEW §6 item 2 (HF `QuantizedCache` backends on T4): **answered by SMOKE-05.** Both raise ImportError on stock Colab (`optimum-quanto` and `hqq` are not installed). They are only a cross-check for the fake cache, so installing them is optional.
