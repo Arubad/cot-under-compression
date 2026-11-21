@@ -82,9 +82,11 @@ _(real entries start below)_
 - Control status: PASS (as SMOKE-03).
 - Next change: fixes and decisions D-004 / D-005 in research/decisions.md, with regression tests (22 tests pass). SMOKE-05 re-run at the fix commit after I1. Open PI questions Q9–Q11.
 
-## 2026-11-21 — I1 — fp32 reference on the frozen GSM8K-300 subset (LAUNCHED)
+## 2026-11-21 — I1 — fp32 reference on the frozen GSM8K-300 subset
 
 - Config: configs/baseline.yaml; git commit `30249b4`; subset frozen in the same commit (tertile boundaries 94 / 140)
 - Hardware: Colab T4 (`cot-t4`), as SMOKE-03
 - Expected: see research/experiments/I1_baseline.md §2 (accuracy 62–74 %, < 3 % truncated, strata easy 40–60 / medium 25–40 / hard 8–20 %, control bit-exact on 50).
-- Observed: _(running; the harness appends its own entry on the VM, which is copied here on completion)_
+- Observed: accuracy **64.7 %** [59.3, 70.0] on 300; 3/300 truncated; mean 137 generated tokens; strata easy 100 / medium 145 / hard 55 (greedy acc 95 / 63 / 15 %); tertile acc 84 / 63 / 47 %; control 0/50 mismatches on both paths, max |Δlogprob| 0.0; 67.0 W, **283 J/problem**, ≈130 ms/step at B = 8; top-10 % mass > 0.9 for 97 % of heads in layers 8–20, highest-entropy layers 27 and 1; in-run latency fit r² 0.04 (not identifiable, as D-004 expected). Config hash `90fe3aeb6018`; finished 10:03 UTC. Artefacts in `results/archive/I1_baseline/`.
+- Control status: **PASS** (50/50).
+- Next change: none needed for I1. Before I5, add a sink-share accumulator to the head recorder (Q12).
