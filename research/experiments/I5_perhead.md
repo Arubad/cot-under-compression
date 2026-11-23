@@ -1,6 +1,6 @@
 # I5 — single-head sparsification over a 6-layer subset
 
-**Status:** 🔒 prediction frozen 2026-11-21 · launch queued
+**Status:** 🔒 prediction frozen 2026-11-21 · 🟡 running: 4/24 cells done 2026-11-23 (q3); resumes as q4
 **Hypothesis served:** H2 · **Theory:** [02 (all)](../theory/02_heavy_attention_H2.md)
 
 ## 1. Question

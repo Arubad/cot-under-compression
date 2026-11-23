@@ -119,3 +119,35 @@ _(real entries start below)_
 - Note: the counter-measured energy of the two fake-quant cells (≈ 248–250 J) is ~12 % below I1's polled reference (283 J, another session). The I8 repeats re-measure the reference with the counter. Until then the simulated energies above are provisional.
 - **Session reclaimed at ~16:00 UTC (free-tier cap)** during INT2 (≈ 25 % done; partial cell lost, reruns). Saved: `results/archive/q1_live.tgz` (15:49 UTC). Remaining queue resumes the next day.
 - Next change: none. Resume the same queue with `--skip-existing` (the first three commands are already done and are dropped from the resumed queue).
+
+## 2026-11-23 — q2 queue (resume of q1) — control gate, I3 INT2, I2 NF4, I4 sparse, I6 ARC, I8/I7 frontier, I5 per-head
+- Git commit: `2ab4d66` (no `src/`, `configs/` or `tests/` change since `de32b6c`, so config hashes match q1); new Colab T4 session `cot-t4`; 34/34 unit tests pass on the VM. Day-1 results restored from `results/archive/q1_live.tgz`.
+- Queue (in order, `tools/colab/queue.py`, QUEUE_ID `q2`; the first command is the gate):
+  1. `control --config configs/baseline.yaml`
+  2. `sweep --config configs/kv_sweep.yaml --minimum --skip-existing` (INT8 / INT4 done in q1 → INT2 per-token only)
+  3. `sweep --config configs/weights_sweep.yaml --minimum --skip-existing` (NF4, fp32 compute)
+  4. `sweep --config configs/sparse_sweep.yaml --minimum --skip-existing` (sink+window, top-k at 50 %)
+  5. `sweep --config configs/controls_math_arc.yaml --minimum --skip-existing` (ARC reference, KV INT4, NF4 on 200 problems)
+  6. `frontier --config configs/frontier.yaml --skip-existing` (I8: 3 repeats of reference and NF4; I7 selector table)
+  7. `perhead --config configs/perhead_sweep.yaml --minimum --skip-existing` (I5, last because it is the longest)
+- Expected: as frozen on each experiment page (I2, I3, I4, I5, I6/I8, I7 — all 🔒 2026-11-21). Control: 0/50 mismatches on both paths and against the I1 cache.
+- Observed:
+  - Attempt 1 (session allocated ~09:15 UTC): **VM reclaimed at ~09:39 UTC** during the control gate. Nothing lost. One reallocation succeeded at once.
+  - Attempt 2: **control PASS** (0/50 on cache and sparse paths, max |Δlogprob| 0.0, **0/50 against the I1 cache**). Cross-session determinism holds again.
+  - **KV INT2 per-token crashed** after 1774 s of decoding (`OverflowError: cannot convert float infinity to integer` in `normalise_number`). Degenerate INT2 text contains a digit run too long for a float. The cell was lost; nothing was written. Fixed in `16bd6f4` (non-finite values stay as text; regression test `tests/test_answer_overflow.py`). The queue moved on (only the first command is a gate).
+  - NF4 (I2) ran to completion at `2ab4d66`. The fix cannot change its result: only an overflowing number reaches the new branch, and that crashed before. The queue was then stopped and relaunched as `q3` at `16bd6f4` (same command list, control as the gate again, since the harness changed).
+
+## 2026-11-23 — q3 queue — control gate, I3 INT2, I4 sparse, I6 ARC, I8 repeats + I7 selector table, I5 per-head (partial)
+- Git commit: `16bd6f4` (OverflowError fix); same Colab T4 session `cot-t4` as q2 attempt 2; 36/36 unit tests pass on the VM. q2 results (incl. NF4) restored from `/content/q2_results.tgz`. Queue: the same 7 commands as q2, QUEUE_ID `q3`.
+- Expected: as frozen on each experiment page.
+- Observed:
+  - **Control PASS** at `16bd6f4` (0/50 cache and sparse paths, max |Δlogprob| 0.0, 0/50 against the I1 cache).
+  - **I3 KV INT2 per-token** (`4bd25fe3f765`): acc 9.7 % [6.3, 13.0], gap 55.0 pt, KM median 3 [2, 3], 1.51× tokens (89/300 at the 512 cap), 415 J/problem measured. → `research/experiments/I3_kv.md`.
+  - **I4** sink + window 50 %: 64.7 %, gap 0.0, KM 15. Top-k 50 %: 65.3 %, gap −0.7, KM 240. Simulated, primary cost ratio 0.972 / 0.974. → `I4_sparse.md`.
+  - **I6 ARC** (200): reference 76.5 %, KV INT4 78.0 % (gap −1.5), NF4 71.0 % (gap 5.5). → `I6_I8_controls_energy.md`.
+  - **I8 repeats** (counter): reference 224.5 / 224.3 / 224.4 J, NF4 257.7 / 258.0 / 258.0 J. Spread 0.1 %. The reference energy for every ratio becomes 224.4 J (I1's polled 283 J was 26 % high).
+  - **I5 per-head**: 4 of 24 cells done (layer 6, heads 0–3): gaps 0.0 / 0.0 / 0.0 / +0.3 pt, 95–100 % censored. The 5th cell (first head of the next layer) was in progress when the VM was reclaimed and is lost.
+  - **VM reclaimed at ~15:25 UTC** (free-tier cap), after ~5.7 h of this session. Halted per the free-tier rule. Saved: `results/archive/q3_live.tgz` (15:14 UTC).
+- **Analysis** (local, `python -m src.run analyze` at `ef98c6d`, which fixes the string tertile-key bug that had silently skipped H1's length clause): **H1 refuted**, **H3 refuted (preliminary, minimum scale)**, H2 pending I5. Outputs in `results/archive/analysis_2026-11-23/` (hypothesis_report.json, frontier tables, figs 1, 2, 4).
+- Control status: PASS at `16bd6f4`.
+- Next change: resume I5 tomorrow at `ef98c6d` (analysis-only change; run path and config hashes unchanged). New session → `ship.sh` → `setup_vm.py` → upload `results/archive/q3_live.tgz` → `restore_results.py` (ARCHIVE=/content/q3_live.tgz) → queue `q4`: `control --config configs/baseline.yaml;;perhead --config configs/perhead_sweep.yaml --minimum --skip-existing`. ~20 cells × 18.5 min ≈ 6.2 h, likely two sessions.

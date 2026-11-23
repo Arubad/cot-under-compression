@@ -27,20 +27,20 @@ Ten weeks, one project at a time, minimum-viable version first. Tick boxes as yo
 - [x] `src/analysis`: pre-registered H1/H2/H3 tests, Figures 1–4 — written
 - [x] Research notebook set up (`research/`): status board, theory for H1/H2/H3, experiment pages, decision log, compute ledger — 2026-11-21
 - [x] Compute moved to Colab T4 via the `colab` CLI (Kaggle occupied; D-002); stack verified, 11/11 unit tests pass on Colab — 2026-11-21
-- [ ] Smoke test passes end to end (every code path, 30 problems; Colab T4 instead of Kaggle); backend availability logged
-- [ ] **Expected-to-fail control passes:** zero-change run is bit-exact against the fp16 cache on 50 problems (logged)
-- [ ] Smoke-test results recorded: which KV backends run on T4; whether pynvml power is exposed on Kaggle/Colab; fp16 vs fp32 decision
+- [x] Smoke test passes end to end (every code path, 30 problems; Colab T4 instead of Kaggle); backend availability logged — SMOKE-05 at `be82d77`, 2026-11-21
+- [x] **Expected-to-fail control passes:** zero-change run is bit-exact against the fp16 cache on 50 problems (logged) — I1 50/50, re-checked against the I1 cache on 2026-11-21 (q1)
+- [x] Smoke-test results recorded: which KV backends run on T4; whether pynvml power is exposed on Kaggle/Colab; fp16 vs fp32 decision — quanto/hqq not installed on Colab; NVML power + energy counter exposed; fp32 (D-001)
 
 ## Milestone 3 — Weeks 5–7: minimum-viable sweeps (~18 GPU-h)
-- [ ] I2 INT4 weights
-- [ ] I3 KV INT8 and INT4 per-token
-- [ ] I4 sink + window and top-k at 50 % (speed/energy simulated, labelled)
+- [x] I2 INT4 weights — NF4 59.0 %, 2026-11-23
+- [x] I3 KV INT8 and INT4 per-token (+ INT2, amendment A7) — 2026-11-23; H1 refuted at minimum scale
+- [x] I4 sink + window and top-k at 50 % (speed/energy simulated, labelled) — both lossless, 2026-11-23
 - [ ] I5 per-head sweep on the 6-layer subset
-- [ ] I6 ARC-Challenge control at 200 problems
-- [ ] I8 energy repeats (3×) on the headline configs
-- [ ] First-divergence histogram per bit-width; within-stratum tertile plot
+- [x] I6 ARC-Challenge control at 200 problems — 2026-11-23
+- [x] I8 energy repeats (3×) on the headline configs — spread 0.1 %, 2026-11-23
+- [x] First-divergence histogram per bit-width; within-stratum tertile plot — fig1, fig2, 2026-11-23
 - [ ] Per-head entropy-vs-drop scatter with ρ
-- [ ] Energy-per-correct-answer frontier (measured and simulated points marked)
+- [x] Energy-per-correct-answer frontier (measured and simulated points marked) — draft: `analyze` fig4 + frontier_table.csv, 2026-11-23 (labels overlap and INT2 dominates the linear y-axis; needs short labels and a log axis before the paper)
 - [ ] Every run has a complete `EXPERIMENT_LOG.md` entry
 
 ## Milestone 4 — Weeks 8–10: selector, analysis and write-up

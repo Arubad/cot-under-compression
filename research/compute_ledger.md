@@ -13,3 +13,6 @@ Budget: minimum version ~18 T4-hours, full version ~100 (README §5). Wall-clock
 | 2026-11-21 | SMOKE-05 | Colab | T4 | 0.4 | 3.3 | including the OOM relaunch; session `cot-t4` stopped afterwards |
 | 2026-11-21 | (debug) | Colab | CPU | 0.05 | — | `cot-cpu` session, created then stopped; tests ran locally in `.venv` instead |
 | 2026-11-21 | q1 day 1 (control, LAT rerun, headstats, I3 ×2 + partial INT2) | Colab | T4 | 1.6 | 4.9 | commit `de32b6c`; session reclaimed ~16:00 UTC by the free-tier cap |
+| 2026-11-23 | q2 (attempt 1) | Colab | T4 | 0.4 | 5.3 | commit `2ab4d66`; VM reclaimed ~09:39 UTC during the control gate |
+| 2026-11-23 | q2 (attempt 2: control, INT2 crash, NF4) | Colab | T4 | 1.1 | 6.4 | INT2 lost to the OverflowError (0.5 h); NF4 done; queue stopped 10:44 UTC |
+| 2026-11-23 | q3 (control, INT2, I4, I6, I8, I5 4/24) | Colab | T4 | 4.7 | 11.1 | commit `16bd6f4`; 10:44–15:25 UTC; reclaimed during I5 cell 5 |
