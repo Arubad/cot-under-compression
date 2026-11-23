@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from ..common.stats import ci_overlaps, spearman
-from ..metrics.accuracy import tertile_gap_ratio, within_stratum_gap_ratios
+from ..metrics.accuracy import by_tertile, tertile_gap_ratio, within_stratum_gap_ratios
 
 
 def _cells(rows: List[Dict], **match) -> List[Dict]:
@@ -45,7 +45,7 @@ def test_h1(kv_rows: List[Dict], weight_rows: List[Dict], scheme: str = "per_tok
     strata_ok = bool(strata) and all(v >= 2.0 for v in strata.values() if np.isfinite(v))
     tert_within_ci = False
     if kv4:
-        bt = kv4["accuracy"].get("by_tertile", {})
+        bt = by_tertile(kv4["accuracy"])
         if 0 in bt and 2 in bt and "gap_to_fp16" in bt[0]:
             tert_within_ci = ci_overlaps(bt[0]["gap_to_fp16"], bt[2]["gap_to_fp16"])
     w4 = next((r for r in weight_rows if int(r["_meta"]["cell"].get("weight_bits", 16)) == 4), None)

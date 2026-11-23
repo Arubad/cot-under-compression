@@ -18,6 +18,7 @@ import pandas as pd
 
 from ..frontier.pareto import frontier_table, h3_frontier_verdict
 from ..frontier.selector import evaluate_selector, h3_selector_verdict
+from ..metrics.accuracy import by_tertile
 from .hypotheses import test_h1, test_h2, test_h3
 
 
@@ -107,7 +108,7 @@ def fig_tertile_gaps(kv4: Dict, w4: Dict, out: str) -> None:
     for k, (name, r) in enumerate((("INT4 KV", kv4), ("INT4 weights", w4))):
         if not r:
             continue
-        bt = r["accuracy"]["by_tertile"]
+        bt = by_tertile(r["accuracy"])
         xs = np.arange(3) + (k - 0.5) * width
         ys = [bt[t]["gap_to_fp16"]["mean"] for t in (0, 1, 2) if t in bt]
         err = [[bt[t]["gap_to_fp16"]["mean"] - bt[t]["gap_to_fp16"]["lo"] for t in (0, 1, 2) if t in bt], [bt[t]["gap_to_fp16"]["hi"] - bt[t]["gap_to_fp16"]["mean"] for t in (0, 1, 2) if t in bt]]

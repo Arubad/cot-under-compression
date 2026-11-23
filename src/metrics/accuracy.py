@@ -34,9 +34,14 @@ def accuracy_table(records: List[Dict], meta: pd.DataFrame, fp16_records: Option
     return out
 
 
+def by_tertile(acc: Dict) -> Dict[int, Dict]:
+    """acc["by_tertile"] with int keys. metrics.json round-trips them to strings ('0', '1', '2')."""
+    return {int(k): v for k, v in acc.get("by_tertile", {}).items()}
+
+
 def tertile_gap_ratio(acc: Dict) -> float:
     """gap(longest tertile) / gap(shortest tertile); inf if the short gap is <= 0."""
-    bt = acc.get("by_tertile", {})
+    bt = by_tertile(acc)
     if 0 not in bt or 2 not in bt or "gap_to_fp16" not in bt[0]:
         return float("nan")
     g0, g2 = bt[0]["gap_to_fp16"]["mean"], bt[2]["gap_to_fp16"]["mean"]
