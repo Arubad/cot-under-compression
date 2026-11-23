@@ -8,6 +8,7 @@ so every configuration is scored on identical problems.
 """
 from __future__ import annotations
 
+import math
 import json
 import os
 import re
@@ -33,6 +34,8 @@ def normalise_number(s: str) -> str:
     try:
         v = float(s)
     except ValueError:
+        return s
+    if not math.isfinite(v):  # digit runs too long for a float (degenerate low-bit outputs); keep as text
         return s
     if abs(v - round(v)) < 1e-9:
         return str(int(round(v)))

@@ -6,6 +6,7 @@ Every configuration sees byte-identical prompts.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Dict, List, Optional
 
@@ -87,7 +88,9 @@ def is_correct(pred: Optional[str], gold: str, task: str = "gsm8k") -> bool:
         return pred.strip().upper() == gold.strip().upper()
     from .data import normalise_number
 
+    p, g = normalise_number(pred), normalise_number(gold)
     try:
-        return abs(float(normalise_number(pred)) - float(normalise_number(gold))) < 1e-6
+        d = abs(float(p) - float(g))
     except ValueError:
-        return normalise_number(pred) == normalise_number(gold)
+        return p == g
+    return d < 1e-6 if math.isfinite(d) else p == g
